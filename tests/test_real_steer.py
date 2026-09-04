@@ -547,10 +547,25 @@ class TestFrontendWiring:
         )
         subprocess.run([node, "-e", script], check=True, capture_output=True, text=True)
 
-    def test_update_steer_pending_badge_clears_count(self):
-        """updateSteerPendingBadge means 'buffer consumed/re-queued' — it must
-        clear the count, not reread it. Greptile P1: the original reread kept a
-        stale pending value alive so the next steer incremented from it."""
+    def test_render_messages_does_not_clear_pending_steer(self):
+        """Transcript rendering must not mutate or clear pending steer state."""
+        render_start = "function renderMessages(options){"
+        start = self.ui.find(render_start)
+        assert start >= 0
+        end = self.ui.find(chr(10) + "function ", start + len(render_start))
+        render_src = self.ui[start:end]
+        assert "if(typeof updateSteerPendingBadge==='function') updateSteerPendingBadge(sid);" in render_src, (
+            "renderMessages may refresh the owner-scoped indicator"
+        )
+        assert "clearSteerPending" not in render_src, (
+            "renderMessages must not explicitly clear pending state"
+        )
+        assert "_setSteerPendingCount" not in render_src, (
+            "renderMessages must not mutate the pending count"
+        )
+
+    def test_set_busy_false_clears_pending_steer(self):
+        """Turn completion is the explicit consumption/requeue boundary."""
         import json
         import shutil
         import subprocess
@@ -561,39 +576,84 @@ class TestFrontendWiring:
             pytest.skip("node not available")
         assert node is not None
 
-        ui_src = _source_between(
-            self.ui,
-            "function updateSteerPendingBadge",
-            "function updateQueueBadge",
-        )
+        busy_start = "function setBusy(v){"
+        start = self.ui.find(busy_start)
+        assert start >= 0
+        end = self.ui.find(chr(10) + "function ", start + len(busy_start))
+        busy_src = self.ui[start:end]
         script = textwrap.dedent(
             f"""
             const assert = require('assert');
-            let status = null;
-            globalThis.setComposerStatus = (value) => {{ status = value; }};
-            const counts = {{}};
+            const counts = {{ A: 2 }};
+            const clearCalls = [];
+            let indicator = null;
+            let queueBadgeSid = null;
+            globalThis.S = {{ busy: true, session: {{ session_id: 'A' }} }};
+            globalThis._queueDrainSid = 'A';
+            globalThis.updateSendBtn = () => {{}};
+            globalThis._clearActivityElapsedTimer = () => {{}};
+            globalThis.setStatus = () => {{}};
+            globalThis.setComposerStatus = () => {{}};
+            globalThis.updateQueueBadge = (sid) => {{ queueBadgeSid = sid; }};
+            globalThis.shiftQueuedSessionMessage = () => null;
+            globalThis._steerPendingCounts = counts;
+            globalThis.clearSteerPending = (sid) => {{
+              clearCalls.push(sid);
+              delete counts[sid];
+              indicator = 0;
+            }};
+            eval({json.dumps(busy_src)});
+            setBusy(false);
+            assert.deepStrictEqual(clearCalls, ['A'], 'setBusy(false) must clear pending state');
+            assert.strictEqual(queueBadgeSid, 'A');
+            assert.strictEqual(counts.A, undefined, 'setBusy(false) must clear pending count');
+            assert.strictEqual(indicator, 0, 'setBusy(false) must refresh empty indicator');
+            assert.strictEqual(globalThis._queueDrainSid, null);
+            """
+        )
+        subprocess.run([node, "-e", script], check=True, capture_output=True, text=True)
+
+    def test_clear_steer_pending_refreshes_display(self):
+        """Explicit clear is the only function that moves count to zero."""
+        import json
+        import shutil
+        import subprocess
+        import textwrap
+
+        node = shutil.which("node")
+        if not node:  # pragma: no cover
+            pytest.skip("node not available")
+        assert node is not None
+
+        badge_start = "function updateSteerPendingBadge(sessionId){"
+        start = self.ui.find(badge_start)
+        assert start >= 0
+        end = self.ui.find(chr(10) + "function updateQueueBadge", start + len(badge_start))
+        badge_src = self.ui[start:end]
+
+        script = textwrap.dedent(
+            f"""
+            const assert = require('assert');
+            const counts = {{ A: 2 }};
+            let indicator = null;
             globalThis._steerPendingCounts = counts;
             globalThis._currentSteerSessionId = () => 'A';
             globalThis._steerOwnerIsCurrent = () => true;
-            // Do NOT mock _updateSteerPendingIndicatorStatus: we assert the
-            // real commands.js chain (indicator -> setComposerStatus) resets
-            // the composer status through it. But ui.js's badge fn calls it
-            // directly, so provide the real one via a spy wrapper.
-            let lastIndicator = undefined;
-            globalThis._updateSteerPendingIndicatorStatus = (count) => {{
-              lastIndicator = count;
-              if (typeof setComposerStatus === 'function') setComposerStatus(count === 0 || count === undefined ? '' : ('queued_count:' + count + ' pending steer'));
-            }};
-            globalThis._setSteerPendingCount = (sid, n) => {{
-              if (n) counts[sid] = n; else delete counts[sid];
-              return n;
-            }};
             globalThis.getSteerPendingCount = (sid) => counts[sid] || 0;
-            eval({json.dumps(ui_src)});
-            counts['A'] = 2; // two steers pending
+            globalThis.setComposerStatus = () => {{}};
+            globalThis._updateSteerPendingIndicatorStatus = (count) => {{ indicator = count; }};
+            globalThis._setSteerPendingCount = (sid, count) => {{
+              if (count) counts[sid] = count; else delete counts[sid];
+              return count;
+            }};
+            eval({json.dumps(badge_src)});
+            counts.A = 2;
             updateSteerPendingBadge('A');
-            assert.strictEqual(counts['A'], undefined, 'count must be cleared');
-            assert.strictEqual(status, '', 'composer status must reset to empty');
+            assert.strictEqual(counts.A, 2, 'refresh must not mutate count');
+            assert.strictEqual(indicator, 2);
+            clearSteerPending('A');
+            assert.strictEqual(counts.A, undefined, 'explicit clear must remove count');
+            assert.strictEqual(indicator, 0, 'explicit clear must refresh display');
             """
         )
         subprocess.run([node, "-e", script], check=True, capture_output=True, text=True)
@@ -1077,9 +1137,15 @@ class TestFrontendWiring:
         """Frontend must listen for pending_steer_leftover SSE events and queue them."""
         idx = self.msgs.find("addEventListener('pending_steer_leftover'")
         assert idx >= 0, "messages.js must add a listener for pending_steer_leftover"
-        block = self.msgs[idx:idx + 600]
+        block = self.msgs[idx:idx + 1200]
         assert "queueSessionMessage" in block, (
             "pending_steer_leftover handler must queue the leftover text for the next turn"
+        )
+        assert "clearSteerPending" in block, (
+            "pending_steer_leftover must explicitly clear pending state after requeue"
+        )
+        assert "updateSteerPendingBadge" not in block, (
+            "leftover must use explicit clear, not the display-only refresh"
         )
 
 

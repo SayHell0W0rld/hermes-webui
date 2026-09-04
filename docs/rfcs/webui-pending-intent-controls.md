@@ -190,10 +190,13 @@ pending-steer count:
   composer status shows `N pending steer` (reusing the `queued_count` i18n
   key), so the user can tell a second Steer was delivered rather than
   silently replaced.
-- The count clears when the session's pending-steer buffer is consumed or
-  re-queued: on `pending_steer_leftover` (unconsumed text is queued as a
-  session message for the next turn) and on turn completion
-  (`setBusy(false)` drain path).
+- The count clears only as an explicit state transition (`clearSteerPending`)
+  when the session's pending-steer buffer is consumed or re-queued: on
+  `pending_steer_leftover` (unconsumed text is queued as a session message for
+  the next turn) and on turn completion (`setBusy(false)`).
+- Transcript rendering (`renderMessages`) may refresh the indicator but never
+  mutates the count; a render while steer still waits at a tool-result boundary
+  must continue showing the pending value.
 - The count is per-owner-session: steering session A then switching to
   session B shows B's count (likely empty), not A's.
 
