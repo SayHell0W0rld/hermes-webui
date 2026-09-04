@@ -638,7 +638,7 @@ class TestFrontendWiring:
         assert helper_end > helper_start
         helper_src = self.msgs[helper_start:helper_end]
         try_body = _source_between(self.cmds, "async function _trySteer(", "\nasync function cmdTitle")
-        combined_src = helper_src.replace('const _STEER_CONSUMPTION_ARMED = {};', 'globalThis._STEER_CONSUMPTION_ARMED = {};').replace('const _STEER_TOOL_BATCHES = {};', 'globalThis._STEER_TOOL_BATCHES = {};').replace('function _resetSteerToolBatch', 'globalThis._resetSteerToolBatch = function').replace('function _clearSteerToolBatch', 'globalThis._clearSteerToolBatch = function').replace('function _trackSteerToolStart', 'globalThis._trackSteerToolStart = function', 1).replace('function _trackSteerToolComplete', 'globalThis._trackSteerToolComplete = function', 1).replace('function _armSteerConsumption', 'globalThis._armSteerConsumption = function').replace('function _resetSteerConsumptionArming', 'globalThis._resetSteerConsumptionArming = function').replace('function _consumeArmedSteer', 'globalThis._consumeArmedSteer = function')
+        combined_src = helper_src.replace('const _STEER_CONSUMPTION_ARMED = {};', 'var _STEER_CONSUMPTION_ARMED = {};').replace('const _STEER_TOOL_BATCHES = {};', 'var _STEER_TOOL_BATCHES = {};').replace('function _resetSteerToolBatch', 'globalThis._resetSteerToolBatch = function').replace('function _clearSteerToolBatch', 'globalThis._clearSteerToolBatch = function').replace('function _trackSteerToolStart', 'globalThis._trackSteerToolStart = function', 1).replace('function _trackSteerToolComplete', 'globalThis._trackSteerToolComplete = function', 1).replace('function _armSteerConsumption', 'globalThis._armSteerConsumption = function').replace('function _resetSteerConsumptionArming', 'globalThis._resetSteerConsumptionArming = function').replace('function _consumeArmedSteer', 'globalThis._consumeArmedSteer = function')
         combined_src = combined_src + "\n" + try_body
         script = textwrap.dedent(
             f"""
@@ -686,6 +686,25 @@ class TestFrontendWiring:
             print(exc.stdout)
             print(exc.stderr, file=sys.stderr)
             raise
+
+    def test_steer_helpers_never_reference_globalthis_lexical_state(self):
+        """Greptile P1 (2026-09-04T14:32): `_consumeArmedSteer` indexed
+        `globalThis._STEER_TOOL_BATCHES`, but messages.js is a classic script —
+        its top-level `const` bindings are lexical and never land on
+        globalThis, so that read threw TypeError before clearSteerPending ran
+        and aborted the whole tool_complete handler. The eval-based harness
+        masks this (direct-eval `var` probes land on globalThis), so guard the
+        source directly: steer helpers must reference these bindings by their
+        lexical names only."""
+        forbidden = [
+            "globalThis._STEER_TOOL_BATCHES",
+            "globalThis._STEER_CONSUMPTION_ARMED",
+        ]
+        for needle in forbidden:
+            assert needle not in self.msgs, (
+                f"steer helpers must not read lexical state via {needle} — "
+                "top-level const in a classic script is not a globalThis property"
+            )
 
     def test_steer_event_before_submission_does_not_clear_pending_count(self):
         """A pre-submit boundary must not consume a steer accepted later."""

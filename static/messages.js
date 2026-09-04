@@ -2205,7 +2205,7 @@ function _consumeArmedSteer(sessionId, streamId){
     delete _STEER_CONSUMPTION_ARMED[sid];
     return false;
   }
-  const toolBatch = globalThis._STEER_TOOL_BATCHES[sid];
+  const toolBatch = _STEER_TOOL_BATCHES[sid];
   if(toolBatch && toolBatch.streamId === activeStreamId && toolBatch.ids.size > 0) return false;
   if(typeof getSteerPendingCount !== 'function' || getSteerPendingCount(sid) <= 0){
     delete _STEER_CONSUMPTION_ARMED[sid];
