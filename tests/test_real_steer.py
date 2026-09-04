@@ -338,7 +338,7 @@ class TestFrontendWiring:
     def test_try_steer_calls_endpoint(self):
         idx = self.cmds.find("async function _trySteer(")
         assert idx >= 0
-        body = _source_between(self.cmds, "async function _trySteer(", "\nasync function cmdTitle")
+        body = _source_between(self.cmds, "async function _trySteer(", "\nasync function cmdTitle(args){")
         assert "/api/chat/steer" in body, "_trySteer must POST to /api/chat/steer"
         assert "method:'POST'" in body or 'method:"POST"' in body
 
@@ -638,7 +638,8 @@ class TestFrontendWiring:
         assert helper_end > helper_start
         helper_src = self.msgs[helper_start:helper_end]
         try_body = _source_between(self.cmds, "async function _trySteer(", "\nasync function cmdTitle")
-        combined_src = helper_src.replace('const _STEER_CONSUMPTION_ARMED = {};', 'globalThis._STEER_CONSUMPTION_ARMED = {};').replace('function _armSteerConsumption', 'globalThis._armSteerConsumption = function').replace('function _resetSteerConsumptionArming', 'globalThis._resetSteerConsumptionArming = function').replace('function _consumeArmedSteer', 'globalThis._consumeArmedSteer = function') + "\n" + try_body
+        combined_src = helper_src.replace('const _STEER_CONSUMPTION_ARMED = {};', 'globalThis._STEER_CONSUMPTION_ARMED = {};').replace('const _STEER_TOOL_BATCHES = {};', 'globalThis._STEER_TOOL_BATCHES = {};').replace('function _resetSteerToolBatch', 'globalThis._resetSteerToolBatch = function').replace('function _clearSteerToolBatch', 'globalThis._clearSteerToolBatch = function').replace('function _trackSteerToolStart', 'globalThis._trackSteerToolStart = function', 1).replace('function _trackSteerToolComplete', 'globalThis._trackSteerToolComplete = function', 1).replace('function _armSteerConsumption', 'globalThis._armSteerConsumption = function').replace('function _resetSteerConsumptionArming', 'globalThis._resetSteerConsumptionArming = function').replace('function _consumeArmedSteer', 'globalThis._consumeArmedSteer = function')
+        combined_src = combined_src + "\n" + try_body
         script = textwrap.dedent(
             f"""
             const assert = require('assert');
@@ -705,6 +706,64 @@ class TestFrontendWiring:
             "assert.strictEqual(_STEER_CONSUMPTION_ARMED.A, undefined);\n"
         )
 
+    def test_parallel_batch_completion_requires_all_tool_ids(self):
+        """Only the final completion in a parallel batch drains accepted steers."""
+        self._run_steer_consumption_script(
+            "assert.strictEqual(await _trySteer('continue with this', true), true);\n"
+            "_trackSteerToolStart('A', 'stream-1', 'tool-1');\n"
+            "_trackSteerToolStart('A', 'stream-1', 'tool-2');\n"
+            "assert.strictEqual(_trackSteerToolComplete('A', 'stream-1', 'tool-1'), false, 'the first parallel result must not drain');\n"
+            "assert.strictEqual(_consumeArmedSteer('A', 'stream-1'), false);\n"
+            "assert.deepStrictEqual(clearCalls, []);\n"
+            "assert.strictEqual(counts.A, 2, 'the pending count must survive the first parallel result');\n"
+            "assert.strictEqual(_trackSteerToolComplete('A', 'stream-1', 'tool-2'), true, 'the final parallel result drains');\n"
+            "assert.strictEqual(_consumeArmedSteer('A', 'stream-1'), true);\n"
+            "assert.deepStrictEqual(clearCalls, ['A']);\n"
+            "assert.strictEqual(counts.A, undefined);\n"
+        )
+
+    def test_single_tool_batch_completion_drains(self):
+        """A single-tool batch retains the existing immediate drain behavior."""
+        self._run_steer_consumption_script(
+            "assert.strictEqual(await _trySteer('continue with this', true), true);\n"
+            "_trackSteerToolStart('A', 'stream-1', 'tool-1');\n"
+            "assert.strictEqual(_trackSteerToolComplete('A', 'stream-1', 'tool-1'), true);\n"
+            "assert.strictEqual(_consumeArmedSteer('A', 'stream-1'), true);\n"
+            "assert.deepStrictEqual(clearCalls, ['A']);\n"
+            "assert.strictEqual(counts.A, undefined);\n"
+            "assert.strictEqual(_STEER_TOOL_BATCHES.A, undefined);\n"
+        )
+
+    def test_batch_tracking_survives_same_stream_reconnect(self):
+        """Reattaching an in-flight parallel batch must preserve its id set."""
+        self._run_steer_consumption_script(
+            "_trackSteerToolStart('A', 'stream-1', 'tool-1');\n"
+            "_trackSteerToolStart('A', 'stream-1', 'tool-2');\n"
+            "_resetSteerToolBatch('A', 'stream-1', { reconnecting: true });\n"
+            "assert.deepStrictEqual([..._STEER_TOOL_BATCHES.A.ids].sort(), ['tool-1', 'tool-2']);\n"
+            "assert.strictEqual(_trackSteerToolComplete('A', 'stream-1', 'tool-1'), false);\n"
+            "assert.strictEqual(_trackSteerToolComplete('A', 'stream-1', 'tool-2'), true);\n"
+        )
+
+    def test_unknown_tool_completion_fails_open(self):
+        """Missing ids or lost tracking state preserve the pre-R5 behavior."""
+        self._run_steer_consumption_script(
+            "assert.strictEqual(await _trySteer('continue with this', true), true);\n"
+            "_trackSteerToolStart('A', 'stream-1', 'tool-1');\n"
+            "assert.strictEqual(_trackSteerToolComplete('A', 'stream-1', 'tool-2'), true, 'unknown id must fail open');\n"
+            "assert.strictEqual(_consumeArmedSteer('A', 'stream-1'), true, 'unknown id must fail open');\n"
+            "assert.strictEqual(_trackSteerToolComplete('A', 'stream-1', ''), true);\n"
+        )
+
+    def test_clear_inflight_state_releases_batch_tracking(self):
+        """Terminal teardown must not leak stream-scoped batch state."""
+        self._run_steer_consumption_script(
+            "_trackSteerToolStart('A', 'stream-1', 'tool-1');\n"
+            "_clearSteerToolBatch('A', 'stream-1');\n"
+            "assert.strictEqual(_STEER_TOOL_BATCHES.A, undefined);\n"
+            "assert.strictEqual(_trackSteerToolComplete('A', 'stream-1', 'tool-1'), true);\n"
+        )
+
     def test_tool_completion_after_accepted_steer_clears_count(self):
         """A post-submit tool result is the earliest observable drain boundary."""
         listener_start = self.msgs.find("source.addEventListener('tool',e=>{")
@@ -714,7 +773,9 @@ class TestFrontendWiring:
         complete_end = self.msgs.find("\n    source.addEventListener('todo_state'", complete_start)
         assert complete_end > complete_start
         complete_listener = self.msgs[complete_start:complete_end]
-        assert "_consumeArmedSteer(activeSid, streamId)" in complete_listener
+        assert "if(typeof _trackSteerToolComplete === 'function') _trackSteerToolComplete(activeSid, streamId, d.tid||d.id)" in complete_listener
+        assert "if(typeof _consumeArmedSteer === 'function') _consumeArmedSteer(activeSid, streamId)" in complete_listener
+        assert "_trackSteerToolStart(activeSid, streamId, d.tid||d.id)" in self.msgs[listener_start:complete_start]
         assert "_consumeArmedSteer(activeSid, streamId)" not in self.msgs[listener_start:complete_start]
 
     def test_all_accumulated_steers_clear_at_one_boundary(self):

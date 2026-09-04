@@ -2132,6 +2132,53 @@ function _dispatchExtensionTurnLifecycle(type,sessionId,streamId,details={}){
 // reliable UI boundary than the next `tool` event, which never arrives when the
 // model continues with prose or finishes the turn.
 const _STEER_CONSUMPTION_ARMED = {};
+const _STEER_TOOL_BATCHES = {};
+function _resetSteerToolBatch(sessionId, streamId, options={}){
+  const sid = String(sessionId || '');
+  const activeStreamId = String(streamId || '');
+  if(!sid || !activeStreamId) return;
+  const current = _STEER_TOOL_BATCHES[sid];
+  if(options && options.reconnecting && current && current.streamId === activeStreamId) return;
+  _STEER_TOOL_BATCHES[sid] = { streamId: activeStreamId, ids: new Set() };
+}
+function _clearSteerToolBatch(sessionId, streamId){
+  const sid = String(sessionId || '');
+  const activeStreamId = String(streamId || '');
+  if(!sid || !activeStreamId) return;
+  const current = _STEER_TOOL_BATCHES[sid];
+  if(current && current.streamId === activeStreamId) delete _STEER_TOOL_BATCHES[sid];
+}
+function _trackSteerToolStart(sessionId, streamId, toolCallId){
+  const sid = String(sessionId || '');
+  const activeStreamId = String(streamId || '');
+  const toolId = String(toolCallId || '');
+  if(!sid || !activeStreamId || !toolId) return;
+  const current = _STEER_TOOL_BATCHES[sid];
+  if(!current || current.streamId !== activeStreamId){
+    _resetSteerToolBatch(sid, activeStreamId);
+    _STEER_TOOL_BATCHES[sid].ids.add(toolId);
+  } else {
+    current.ids.add(toolId);
+  }
+}
+function _trackSteerToolComplete(sessionId, streamId, toolCallId){
+  const sid = String(sessionId || '');
+  const activeStreamId = String(streamId || '');
+  const toolId = String(toolCallId || '');
+  if(!sid || !activeStreamId || !toolId) return true;
+  const current = _STEER_TOOL_BATCHES[sid];
+  if(!current || current.streamId !== activeStreamId) return true;
+  if(!current.ids.has(toolId)){
+    delete _STEER_TOOL_BATCHES[sid];
+    return true;
+  }
+  current.ids.delete(toolId);
+  if(current.ids.size === 0){
+    delete _STEER_TOOL_BATCHES[sid];
+    return true;
+  }
+  return false;
+}
 function _armSteerConsumption(sessionId, streamId){
   const sid = String(sessionId || '');
   const activeStreamId = String(streamId || '');
@@ -2158,6 +2205,8 @@ function _consumeArmedSteer(sessionId, streamId){
     delete _STEER_CONSUMPTION_ARMED[sid];
     return false;
   }
+  const toolBatch = globalThis._STEER_TOOL_BATCHES[sid];
+  if(toolBatch && toolBatch.streamId === activeStreamId && toolBatch.ids.size > 0) return false;
   if(typeof getSteerPendingCount !== 'function' || getSteerPendingCount(sid) <= 0){
     delete _STEER_CONSUMPTION_ARMED[sid];
     return false;
@@ -2204,6 +2253,7 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
   INFLIGHT[activeSid].streamId=streamId;
   if(!Array.isArray(INFLIGHT[activeSid].activityBurstAnchors)) INFLIGHT[activeSid].activityBurstAnchors=[];
   if(typeof _resetSteerConsumptionArming === 'function') _resetSteerConsumptionArming(activeSid, streamId, options);
+  if(typeof _resetSteerToolBatch === 'function') _resetSteerToolBatch(activeSid, streamId, options);
   if(INFLIGHT[activeSid].currentActivityBurstId===undefined) INFLIGHT[activeSid].currentActivityBurstId=0;
   if(INFLIGHT[activeSid].currentLiveSegmentSeq===undefined) INFLIGHT[activeSid].currentLiveSegmentSeq=0;
   let assistantText='';
@@ -2342,6 +2392,7 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
   }
   function _clearOwnerInflightState(){
     if(_isActiveSession() && S.activeStreamId!==streamId) return;
+    if(typeof _clearSteerToolBatch === 'function') _clearSteerToolBatch(activeSid, streamId);
     delete INFLIGHT[activeSid];
     clearInflightState(activeSid);
     _clearActivePaneInflightIfOwner();
@@ -5894,6 +5945,7 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
       if(!S.session||S.session.session_id!==activeSid||S.activeStreamId!==streamId) return;
       const d=JSON.parse(e.data);
       if(d.name==='clarify') return;
+      if(typeof _trackSteerToolStart === 'function') _trackSteerToolStart(activeSid, streamId, d.tid||d.id);
       _completeAutomaticCompressionOnLiveProgress(activeSid);
       const tc=upsertLiveToolCall(d,'start');
       if(!tc) return;
@@ -5930,6 +5982,7 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
       if(!S.session||S.session.session_id!==activeSid||S.activeStreamId!==streamId) return;
       const d=JSON.parse(e.data);
       if(d.name==='clarify') return;
+      if(typeof _trackSteerToolComplete === 'function') _trackSteerToolComplete(activeSid, streamId, d.tid||d.id);
       if(typeof _consumeArmedSteer === 'function') _consumeArmedSteer(activeSid, streamId);
       _completeAutomaticCompressionOnLiveProgress(activeSid);
       const tc=upsertLiveToolCall(d,'complete');
