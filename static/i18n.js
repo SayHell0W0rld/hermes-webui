@@ -20193,7 +20193,6 @@ const LOCALES = {
     btw_label: 'Vedlejší otázka — není v historii',
     btw_no_answer: 'Nebyla přijata žádná odpověď.',
     busy_interrupt_confirm: 'Přerušeno — odeslání nové zprávy',
-    busy_steer_fallback: 'Řízení není k dispozici — návrh byl obnoven',
     cancel_failed: 'Zrušení selhalo.',
     cancel_unavailable: 'Zrušení není k dispozici.',
     cancelling: 'Rušení\u2026',

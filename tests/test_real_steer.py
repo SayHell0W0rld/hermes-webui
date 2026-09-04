@@ -1384,6 +1384,26 @@ class TestFrontendWiring:
             "leftover must use explicit clear, not the display-only refresh"
         )
 
+    def test_done_handler_clears_background_owner_pending_count(self):
+        """Maintainer review (2026-09-04T15:15): the done handler runs for both
+        active and background sessions, while the setBusy(false) clear only
+        fires for the viewed session — so a steer delivered to a non-active
+        owner session A (user switched to B) never cleared. The done handler
+        must call clearSteerPending(completedSid) unconditionally, which is
+        the one point that covers background owners without inventing an
+        'applied' proof."""
+        idx = self.msgs.find("addEventListener('done'")
+        assert idx >= 0, "messages.js must have a done listener"
+        block = self.msgs[idx:idx + 9000]
+        completed_idx = block.find("_clearOwnerInflightState();")
+        assert completed_idx >= 0, "done handler must call _clearOwnerInflightState"
+        tail = block[completed_idx:completed_idx + 600]
+        assert "clearSteerPending(completedSid)" in tail, (
+            "done handler must call clearSteerPending(completedSid) right after "
+            "_clearOwnerInflightState so a background owner's stale pending count "
+            "clears when its turn completes"
+        )
+
 
 # ── i18n keys ─────────────────────────────────────────────────────────────
 

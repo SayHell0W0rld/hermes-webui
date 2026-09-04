@@ -6259,6 +6259,12 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
         }
         if(isSessionViewed) _markSessionViewed(completedSid, completedMessageCount);
         _clearOwnerInflightState();
+        // The done handler runs for both active and background sessions, so
+        // this is the one point that reliably covers a non-viewed owner:
+        // clearSteerPending(completedSid) zeroes the owner's pending count
+        // even when the user is currently viewing a different session (the
+        // active-pane setBusy(false) clear cannot fire for background owners).
+        if(typeof clearSteerPending==='function') clearSteerPending(completedSid);
         if(typeof _markSessionCompletedInList==='function'){
           _markSessionCompletedInList(completedSession, activeSid);
         }
