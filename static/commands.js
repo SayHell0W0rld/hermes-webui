@@ -1569,7 +1569,7 @@ function getSteerPendingCount(sid){
 function _steerPendingIndicatorStatus(count){
   const n=Math.max(0,Number(count)||0);
   if(n<=0) return '';
-  return `${t('queued_count',n)} pending steer`;
+  return `${t('queued_count',n)} steer delivered to tool boundary`;
 }
 
 function _updateSteerPendingIndicatorStatus(count){

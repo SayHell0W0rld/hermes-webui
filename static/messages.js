@@ -2126,10 +2126,11 @@ function _dispatchExtensionTurnLifecycle(type,sessionId,streamId,details={}){
   }
 }
 
-// A steer is consumed atomically at the next continuation tool batch.  A
-// single tool_complete event cannot mark that boundary because a batch can
-// contain multiple parallel tool results.  The next `tool` event means the
-// prior batch settled and the model is continuing with the drained steer.
+// A steer is consumed at a tool-result boundary.  The agent drains it after
+// each tool result is appended, including the last result in a parallel batch.
+// Therefore the first post-acceptance `tool_complete` event is an earlier
+// reliable UI boundary than the next `tool` event, which never arrives when the
+// model continues with prose or finishes the turn.
 const _STEER_CONSUMPTION_ARMED = {};
 function _armSteerConsumption(sessionId, streamId){
   const sid = String(sessionId || '');
@@ -5893,7 +5894,6 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
       if(!S.session||S.session.session_id!==activeSid||S.activeStreamId!==streamId) return;
       const d=JSON.parse(e.data);
       if(d.name==='clarify') return;
-      if(typeof _consumeArmedSteer === 'function') _consumeArmedSteer(activeSid, streamId);
       _completeAutomaticCompressionOnLiveProgress(activeSid);
       const tc=upsertLiveToolCall(d,'start');
       if(!tc) return;
@@ -5930,6 +5930,7 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
       if(!S.session||S.session.session_id!==activeSid||S.activeStreamId!==streamId) return;
       const d=JSON.parse(e.data);
       if(d.name==='clarify') return;
+      if(typeof _consumeArmedSteer === 'function') _consumeArmedSteer(activeSid, streamId);
       _completeAutomaticCompressionOnLiveProgress(activeSid);
       const tc=upsertLiveToolCall(d,'complete');
       if(!tc) return;

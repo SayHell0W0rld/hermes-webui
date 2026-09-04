@@ -548,7 +548,7 @@ class TestFrontendWiring:
             (async()=>{{
               const delivered = await _trySteer('second steer', true);
               assert.strictEqual(delivered, true);
-              assert.strictEqual(status, 'queued_count:2 pending steer');
+              assert.strictEqual(status, 'queued_count:2 steer delivered to tool boundary');
             }})().catch(err=>{{console.error(err); process.exit(1);}});
             """
         )
@@ -704,6 +704,18 @@ class TestFrontendWiring:
             "assert.strictEqual(counts.A, undefined);\n"
             "assert.strictEqual(_STEER_CONSUMPTION_ARMED.A, undefined);\n"
         )
+
+    def test_tool_completion_after_accepted_steer_clears_count(self):
+        """A post-submit tool result is the earliest observable drain boundary."""
+        listener_start = self.msgs.find("source.addEventListener('tool',e=>{")
+        assert listener_start >= 0
+        complete_start = self.msgs.find("source.addEventListener('tool_complete',e=>{", listener_start)
+        assert complete_start > listener_start
+        complete_end = self.msgs.find("\n    source.addEventListener('todo_state'", complete_start)
+        assert complete_end > complete_start
+        complete_listener = self.msgs[complete_start:complete_end]
+        assert "_consumeArmedSteer(activeSid, streamId)" in complete_listener
+        assert "_consumeArmedSteer(activeSid, streamId)" not in self.msgs[listener_start:complete_start]
 
     def test_all_accumulated_steers_clear_at_one_boundary(self):
         """Agent drains concatenated pending steers once; one boundary clears all."""
