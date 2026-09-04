@@ -1665,6 +1665,7 @@ async function _trySteer(msg, explicitSteer){
     showToast(t('cmd_steer_no_msg'));
     return false;
   }
+  if(ownerStreamId&&typeof _armSteerConsumption==='function') _armSteerConsumption(ownerSid,ownerStreamId);
   try{
     result=await api('/api/chat/steer',{
       method:'POST',
@@ -1680,7 +1681,6 @@ async function _trySteer(msg, explicitSteer){
     // the upload/API await, which is fine: we're clearing the OWNER's draft).
     _steerUploadCache=null; // delivered — invalidate the retry cache
     if(ownerSid&&typeof _clearComposerDraft==='function') _clearComposerDraft(ownerSid,_steerRestoreText(originalMsg,explicitSteer),pendingFilesSnapshot);
-    if(ownerStreamId&&typeof _armSteerConsumption==='function') _armSteerConsumption(ownerSid,ownerStreamId);
     // Show a transient steer indicator in the chat (NOT in S.messages — it must
     // survive the done event's S.messages=d.session.messages replacement).
     // The indicator self-removes when the turn completes (done/cancel/error
@@ -1702,6 +1702,7 @@ async function _trySteer(msg, explicitSteer){
     return true;
   }
   if(result&&result.fallback==='gateway_steer_queued'&&typeof queueSessionMessage==='function'){
+    if(ownerStreamId&&typeof _resetSteerConsumptionArming==='function') _resetSteerConsumptionArming(ownerSid,ownerStreamId);
     _steerUploadCache=null;
     queueSessionMessage(ownerSid,{
       text:originalMsg,
@@ -1720,6 +1721,7 @@ async function _trySteer(msg, explicitSteer){
     showToast(t('steer_leftover_queued'),3000);
     return true;
   }
+  if(ownerStreamId&&typeof _resetSteerConsumptionArming==='function') _resetSteerConsumptionArming(ownerSid,ownerStreamId);
   // Do not fall back to interrupt: Steer failure is not permission to cancel
   // the active run. Restore the draft so the user can explicitly Queue or
   // Interrupt if that is what they want next. Pending files remain staged.

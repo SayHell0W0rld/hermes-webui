@@ -2164,9 +2164,9 @@ function _trackSteerToolComplete(sessionId, streamId, toolCallId){
   const sid = String(sessionId || '');
   const activeStreamId = String(streamId || '');
   const toolId = String(toolCallId || '');
-  if(!sid || !activeStreamId || !toolId) return true;
+  if(!sid || !activeStreamId || !toolId) return false;
   const current = _STEER_TOOL_BATCHES[sid];
-  if(!current || current.streamId !== activeStreamId) return true;
+  if(!current || current.streamId !== activeStreamId) return false;
   if(!current.ids.has(toolId)){
     // An untracked completion (e.g. the tool_start was missed across a
     // same-stream reconnect) carries no batch-boundary information: the
@@ -2182,6 +2182,17 @@ function _trackSteerToolComplete(sessionId, streamId, toolCallId){
     return true;
   }
   return false;
+}
+function _clearSteerConsumptionForStream(sessionId, streamId){
+  const sid = String(sessionId || '');
+  const activeStreamId = String(streamId || '');
+  if(!sid) return;
+  const current = _STEER_CONSUMPTION_ARMED[sid];
+  const shouldClear = !activeStreamId || (current && current.streamId === activeStreamId);
+  if(shouldClear){
+    delete _STEER_CONSUMPTION_ARMED[sid];
+    if(typeof _setSteerPendingCount === 'function') _setSteerPendingCount(sid, 0);
+  }
 }
 function _armSteerConsumption(sessionId, streamId){
   const sid = String(sessionId || '');
@@ -2397,6 +2408,7 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
   }
   function _clearOwnerInflightState(){
     if(_isActiveSession() && S.activeStreamId!==streamId) return;
+    if(typeof _clearSteerConsumptionForStream === 'function') _clearSteerConsumptionForStream(activeSid, streamId);
     if(typeof _clearSteerToolBatch === 'function') _clearSteerToolBatch(activeSid, streamId);
     delete INFLIGHT[activeSid];
     clearInflightState(activeSid);

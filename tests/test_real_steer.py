@@ -327,6 +327,7 @@ class TestFrontendWiring:
         cls.msgs = (Path(__file__).parent.parent / "static" / "messages.js").read_text(encoding="utf-8")
         cls.i18n = (Path(__file__).parent.parent / "static" / "i18n.js").read_text(encoding="utf-8")
         cls.ui = (Path(__file__).parent.parent / "static" / "ui.js").read_text(encoding="utf-8")
+        cls.sessions = (Path(__file__).parent.parent / "static" / "sessions.js").read_text(encoding="utf-8")
 
     def test_cmd_steer_calls_endpoint(self):
         idx = self.cmds.find("async function cmdSteer(")
@@ -665,6 +666,7 @@ class TestFrontendWiring:
             globalThis._steerIndicatorText = () => '';
             globalThis.t = (key) => key;
             globalThis._steerSetComposerStatusForOwner = () => {{}};
+            globalThis._steerFailureMessageKey = (fallback) => `steer_fail_${{fallback}}`;
             globalThis._showSteerIndicator = () => {{}};
             globalThis._steerIndicatorText = () => '';
             globalThis.getSteerPendingCount = (sid) => counts[sid] || 0;
@@ -746,7 +748,7 @@ class TestFrontendWiring:
         self._run_steer_consumption_script(
             "assert.strictEqual(await _trySteer('continue with this', true), true);\n"
             "_trackSteerToolStart('A', 'stream-1', 'tool-1');\n"
-            "assert.strictEqual(_trackSteerToolComplete('A', 'stream-1', 'tool-1'), true);\n"
+            "assert.strictEqual(_trackSteerToolComplete('A', 'stream-1', 'tool-1'), true, 'the single tracked tool completes the batch');\n"
             "assert.strictEqual(_consumeArmedSteer('A', 'stream-1'), true);\n"
             "assert.deepStrictEqual(clearCalls, ['A']);\n"
             "assert.strictEqual(counts.A, undefined);\n"
@@ -764,22 +766,65 @@ class TestFrontendWiring:
             "assert.strictEqual(_trackSteerToolComplete('A', 'stream-1', 'tool-2'), true);\n"
         )
 
-    def test_unknown_tool_completion_ignores_and_preserves_batch(self):
-        """Greptile P1 (2026-09-04T15:33): an untracked completion (tool_start
-        missed across a same-stream reconnect) carries no boundary information
-        — it must neither destroy the tracked set nor consume the steer, since
-        sibling tools may still be running when the backend only drains at
-        batch finalize. Missing/empty ids and lost tracking state keep the
-        pre-R5 open behavior (no tracked batch to reason about)."""
+    def test_legacy_tool_completion_without_id_is_not_a_batch_boundary(self):
+        """A legacy Hermes Agent emits tool_complete without tid. The missing
+        id carries no batch-boundary information, so it must not consume every
+        pending steer at the first concurrent tool result."""
         self._run_steer_consumption_script(
             "assert.strictEqual(await _trySteer('continue with this', true), true);\n"
             "_trackSteerToolStart('A', 'stream-1', 'tool-1');\n"
-            "assert.strictEqual(_trackSteerToolComplete('A', 'stream-1', 'tool-2'), false, 'unknown id carries no boundary info');\n"
-            "assert.strictEqual(_consumeArmedSteer('A', 'stream-1'), false, 'unknown id must not consume');\n"
-            "assert.strictEqual(_STEER_TOOL_BATCHES.A.ids.has('tool-1'), true, 'tracked sibling must survive');\n"
-            "assert.strictEqual(_trackSteerToolComplete('A', 'stream-1', ''), true);\n"
-            "assert.strictEqual(_trackSteerToolComplete('A', 'stream-1', 'tool-1'), true, 'tracked id completes the batch');\n"
+            "_trackSteerToolStart('A', 'stream-1', 'tool-2');\n"
+            "assert.strictEqual(_trackSteerToolComplete('A', 'stream-1', ''), false, 'legacy missing id is not a boundary');\n"
+            "assert.strictEqual(_consumeArmedSteer('A', 'stream-1'), false, 'legacy missing id must not consume');\n"
+            "assert.strictEqual(_STEER_TOOL_BATCHES.A.ids.size, 2, 'both batch members must survive');\n"
+            "assert.strictEqual(_trackSteerToolComplete('A', 'stream-1', 'tool-1'), false);\n"
+            "assert.strictEqual(_trackSteerToolComplete('A', 'stream-1', 'tool-2'), true, 'the tracked batch itself is the boundary');\n"
         )
+
+    def test_detached_reconnect_preflight_clears_stale_pending_for_stream(self):
+        """The reconnect preflight is another terminal teardown path for a
+        detached stream that completed while no EventSource was attached."""
+        import json
+        import shutil
+        import subprocess
+        import textwrap
+
+        node = shutil.which("node")
+        if not node:  # pragma: no cover
+            pytest.skip("node not available")
+        assert node is not None
+
+        helper_src = _source_between(
+            self.msgs,
+            "function _clearOwnerInflightState",
+            "\n  function _isMarkerOnlyAssistantMessage",
+        )
+        helper_src = helper_src.replace("function _clearOwnerInflightState(){", "globalThis._clearOwnerInflightState = function(){", 1)
+        script = textwrap.dedent(
+            f"""
+            const assert = require('assert');
+            let clearedConsumption = [];
+            globalThis.INFLIGHT = {{ A: {{ streamId: 'stream-1' }} }};
+            globalThis._isActiveSession = () => true;
+            globalThis.S = {{ activeStreamId: 'stream-1' }};
+            globalThis.activeSid = 'A';
+            globalThis.streamId = 'stream-1';
+            globalThis._clearSteerToolBatch = () => {{}};
+            globalThis._clearSteerConsumptionForStream = (sid, stream) => clearedConsumption.push([sid, stream]);
+            globalThis.clearInflightState = () => {{}};
+            globalThis._clearActivePaneInflightIfOwner = () => {{}};
+            globalThis._resumeSessionStreamAfterLiveChat = () => {{}};
+            eval({json.dumps(helper_src)});
+            _clearOwnerInflightState();
+            assert.deepStrictEqual(clearedConsumption, [['A', 'stream-1']]);
+            """
+        )
+        try:
+            subprocess.run([node, "-e", script], check=True, capture_output=True, text=True)
+        except subprocess.CalledProcessError as exc:
+            print(exc.stdout)
+            print(exc.stderr, file=sys.stderr)
+            raise
 
     def test_clear_inflight_state_releases_batch_tracking(self):
         """Terminal teardown must not leak stream-scoped batch state."""
@@ -787,8 +832,127 @@ class TestFrontendWiring:
             "_trackSteerToolStart('A', 'stream-1', 'tool-1');\n"
             "_clearSteerToolBatch('A', 'stream-1');\n"
             "assert.strictEqual(_STEER_TOOL_BATCHES.A, undefined);\n"
-            "assert.strictEqual(_trackSteerToolComplete('A', 'stream-1', 'tool-1'), true);\n"
+            "assert.strictEqual(_trackSteerToolComplete('A', 'stream-1', 'tool-1'), false, 'a cleared batch has no boundary information');\n"
         )
+
+    def test_terminal_inflight_teardown_clears_pending_steer_for_stream(self):
+        """A detached stream can complete without delivering done to its old
+        EventSource. The terminal teardown helper is the shared chokepoint that
+        must expire the corresponding pending count for that stream."""
+        import json
+        import shutil
+        import subprocess
+        import textwrap
+
+        node = shutil.which("node")
+        if not node:  # pragma: no cover
+            pytest.skip("node not available")
+        assert node is not None
+
+        helper_src = _source_between(
+            self.msgs,
+            "function _clearOwnerInflightState",
+            "\n  function _isMarkerOnlyAssistantMessage",
+        )
+        helper_src = helper_src.replace("function _clearOwnerInflightState(){", "globalThis._clearOwnerInflightState = function(){", 1)
+        script = textwrap.dedent(
+            f"""
+            const assert = require('assert');
+            let clearedBatches = [];
+            let clearedConsumption = [];
+            globalThis.INFLIGHT = {{ A: {{ streamId: 'stream-1' }} }};
+            globalThis._isActiveSession = () => true;
+            globalThis.S = {{ activeStreamId: 'stream-1' }};
+            globalThis.activeSid = 'A';
+            globalThis.streamId = 'stream-1';
+            globalThis._clearSteerToolBatch = (sid, stream) => clearedBatches.push([sid, stream]);
+            globalThis._clearSteerConsumptionForStream = (sid, stream) => clearedConsumption.push([sid, stream]);
+            globalThis.clearInflightState = () => {{}};
+            globalThis._clearActivePaneInflightIfOwner = () => {{}};
+            globalThis._resumeSessionStreamAfterLiveChat = () => {{}};
+            eval({json.dumps(helper_src)});
+            _clearOwnerInflightState();
+            assert.deepStrictEqual(clearedBatches, [['A', 'stream-1']]);
+            assert.deepStrictEqual(clearedConsumption, [['A', 'stream-1']]);
+            assert.strictEqual(INFLIGHT.A, undefined);
+            """
+        )
+        try:
+            subprocess.run([node, "-e", script], check=True, capture_output=True, text=True)
+        except subprocess.CalledProcessError as exc:
+            print(exc.stdout)
+            print(exc.stderr, file=sys.stderr)
+            raise
+
+    def test_idle_session_reload_clears_stale_pending_for_stream(self):
+        """Reopening a session after its detached stream completed must expire
+        the owner's stale pending count, even though the old EventSource never
+        delivered done."""
+        import json
+        import shutil
+        import subprocess
+        import textwrap
+
+        node = shutil.which("node")
+        if not node:  # pragma: no cover
+            pytest.skip("node not available")
+        assert node is not None
+
+        start=self.sessions.index("  if(INFLIGHT[sid]){\n    _ensureInflightLiveAssistantMessage(INFLIGHT[sid]);")
+        end=self.sessions.index("\n  // Sync context usage indicator", start)
+        block=self.sessions[start:end]
+        prefix = """
+        const assert = require('assert');
+        const counts={A:2};
+        const cleared=[];
+        globalThis.INFLIGHT={};
+        globalThis.S={busy:true,activeStreamId:null,session:{session_id:'A',active_stream_id:null,pending_attachments:[]}};
+        globalThis._keepStaleUntilLoaded=false;
+        globalThis._loadGeneration=null;
+        globalThis._hydrateTodosFromSession=()=>{};
+        globalThis.sid='A'; globalThis.activeStreamId='stream-1'; globalThis.sameSessionForceReload=false;
+        globalThis._serverLiveSnapshotInflight=()=>null; globalThis._selectLiveRecoveryInflight=()=>null;
+        globalThis._ensureInflightLiveAssistantMessage=()=>{}; globalThis._projectInflightMessagesForActivityBursts=()=>[];
+        globalThis._mergePendingSessionMessage=()=>{};
+        globalThis.appendThinking=()=>{};
+        globalThis._clearSteerConsumptionForStream=(sid,streamId)=>cleared.push([sid,streamId]);
+        globalThis.clearLiveToolCards=()=>{}; globalThis._syncToolCallsForLoadedMessages=()=>{};
+        globalThis._ensureMessagesLoaded=async()=>{}; globalThis._rearmActiveSessionStream=()=>{};
+        globalThis._isCurrentLoad=()=>true; globalThis.setBusy=()=>{};
+        globalThis.attachLiveStream=()=>{}; globalThis.watchInflightSession=()=>{};
+        globalThis.updateSendBtn=()=>{}; globalThis.setStatus=()=>{};
+        globalThis.setComposerStatus=()=>{}; globalThis.syncTopbar=()=>{};
+        globalThis.renderMessages=()=>{}; globalThis.updateQueueBadge=()=>{};
+        globalThis.startApprovalPolling=()=>{}; globalThis.startClarifyPolling=()=>{};
+        globalThis._fetchYoloState=()=>{}; globalThis.resumeManualCompressionForSession=()=>{};
+        globalThis._deferWorkspaceRefreshForSession=()=>{};
+        S.activeStreamId=null;
+        (async()=>{
+          var activeStreamId='stream-1';
+          var sid='A';
+          var S={activeStreamId:'stream-2',session:{session_id:'B'}};
+        """
+        suffix = """
+        assert.deepStrictEqual(cleared,[["A",null],["A","stream-1"]]);
+        assert.strictEqual(counts.A,2);
+        })().catch(err=>{console.error(err);process.exit(1);});
+        """
+        script = prefix + "await eval(" + json.dumps("(async()=>{" + block + "})()") + ");" + suffix
+        try:
+            subprocess.run([node,"-e",script],check=True,capture_output=True,text=True)
+        except subprocess.CalledProcessError as exc:
+            print(exc.stdout)
+            print(exc.stderr,file=sys.stderr)
+            raise
+
+    def test_idle_reload_expires_owner_pending_even_without_stream_snapshot(self):
+        """Polling can force a reload after the owner is already known idle, so
+        the idle branch must expire owner state even when no stream id remains."""
+        start = self.sessions.index("  }else{\n    // Phase 2b: Idle session")
+        end = self.sessions.index("    // _ensureMessagesLoaded is idempotent;", start)
+        idle_head = self.sessions[start:end]
+        assert "if (typeof _clearSteerConsumptionForStream === 'function') {" in idle_head
+        assert "_clearSteerConsumptionForStream(sid, null);" in idle_head
 
     def test_new_stream_reattach_clears_stale_pending_count(self):
         """A different stream is a turn boundary and must expire stale pending state."""
@@ -800,15 +964,20 @@ class TestFrontendWiring:
             "assert.deepStrictEqual(clearCalls, []);\n"
         )
 
-    def test_same_stream_reconnect_preserves_pending_count(self):
-        """Reconnecting to the same stream keeps the pending steer live."""
+    def test_prearm_steer_consumption_before_accepted_response(self):
+        """The backend may call agent.steer() before HTTP resolves and reach the
+        next tool boundary before response processing resumes. Pre-arm on
+        submission so a concurrent boundary still sees the consumption signal;
+        failed fallbacks release the pre-arm before restoring the draft."""
         self._run_steer_consumption_script(
-            "assert.strictEqual(await _trySteer('continue with this', true), true);\n"
-            "_resetSteerConsumptionArming('A', 'stream-1', { reconnecting: true });\n"
-            "assert.strictEqual(_STEER_CONSUMPTION_ARMED.A.armed, true);\n"
-            "assert.strictEqual(counts.A, 1, 'the same stream reconnect must preserve the pending count');\n"
+            "counts.A = 1;\n"
+            "await _trySteer('continue with this', true);\n"
             "assert.strictEqual(_consumeArmedSteer('A', 'stream-1'), true);\n"
             "assert.deepStrictEqual(clearCalls, ['A']);\n"
+            "assert.strictEqual(counts.A, undefined);\n"
+            "globalThis.api = async () => ({ accepted: false, fallback: 'busy' });\n"
+                        "await _trySteer('rejected steer', true);\n"
+            "assert.strictEqual(_STEER_CONSUMPTION_ARMED.A, undefined);\n"
         )
 
     def test_tool_completion_after_accepted_steer_clears_count(self):
@@ -845,8 +1014,8 @@ class TestFrontendWiring:
             "assert.deepStrictEqual(clearCalls, ['A']);\n"
         )
 
-    def test_same_stream_reconnect_preserves_pending_count(self):
-        """Reconnecting to the same stream keeps the pending steer live."""
+    def test_same_stream_reconnect_preserves_accumulated_pending_count(self):
+        """Reconnecting to the same stream keeps every accumulated steer live."""
         self._run_steer_consumption_script(
             "assert.strictEqual(await _trySteer('continue with this', true), true);\n"
             "_resetSteerConsumptionArming('A', 'stream-1', { reconnecting: true });\n"
