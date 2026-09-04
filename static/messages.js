@@ -2126,6 +2126,47 @@ function _dispatchExtensionTurnLifecycle(type,sessionId,streamId,details={}){
   }
 }
 
+// A steer is consumed atomically at the next continuation tool batch.  A
+// single tool_complete event cannot mark that boundary because a batch can
+// contain multiple parallel tool results.  The next `tool` event means the
+// prior batch settled and the model is continuing with the drained steer.
+const _STEER_CONSUMPTION_ARMED = {};
+function _armSteerConsumption(sessionId, streamId){
+  const sid = String(sessionId || '');
+  const activeStreamId = String(streamId || '');
+  if(!sid || !activeStreamId) return;
+  const current = _STEER_CONSUMPTION_ARMED[sid];
+  if(current && current.streamId === activeStreamId && current.armed) return;
+  _STEER_CONSUMPTION_ARMED[sid] = { streamId: activeStreamId, armed: true };
+}
+function _resetSteerConsumptionArming(sessionId, streamId, options={}){
+  const sid = String(sessionId || '');
+  const activeStreamId = String(streamId || '');
+  if(!sid || !activeStreamId) return;
+  const current = _STEER_CONSUMPTION_ARMED[sid];
+  if(options && options.reconnecting && current && current.streamId === activeStreamId && current.armed) return;
+  delete _STEER_CONSUMPTION_ARMED[sid];
+}
+function _consumeArmedSteer(sessionId, streamId){
+  const sid = String(sessionId || '');
+  const activeStreamId = String(streamId || '');
+  if(!sid || !activeStreamId) return false;
+  const current = _STEER_CONSUMPTION_ARMED[sid];
+  if(!current || !current.armed) return false;
+  if(current.streamId !== activeStreamId){
+    delete _STEER_CONSUMPTION_ARMED[sid];
+    return false;
+  }
+  if(typeof getSteerPendingCount !== 'function' || getSteerPendingCount(sid) <= 0){
+    delete _STEER_CONSUMPTION_ARMED[sid];
+    return false;
+  }
+  if(typeof clearSteerPending !== 'function') return false;
+  clearSteerPending(sid);
+  delete _STEER_CONSUMPTION_ARMED[sid];
+  return true;
+}
+
 function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
   if(!activeSid||!streamId) return;
   const reconnecting=!!options.reconnecting;
@@ -2161,6 +2202,7 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
   }
   INFLIGHT[activeSid].streamId=streamId;
   if(!Array.isArray(INFLIGHT[activeSid].activityBurstAnchors)) INFLIGHT[activeSid].activityBurstAnchors=[];
+  if(typeof _resetSteerConsumptionArming === 'function') _resetSteerConsumptionArming(activeSid, streamId, options);
   if(INFLIGHT[activeSid].currentActivityBurstId===undefined) INFLIGHT[activeSid].currentActivityBurstId=0;
   if(INFLIGHT[activeSid].currentLiveSegmentSeq===undefined) INFLIGHT[activeSid].currentLiveSegmentSeq=0;
   let assistantText='';
@@ -5851,6 +5893,7 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
       if(!S.session||S.session.session_id!==activeSid||S.activeStreamId!==streamId) return;
       const d=JSON.parse(e.data);
       if(d.name==='clarify') return;
+      if(typeof _consumeArmedSteer === 'function') _consumeArmedSteer(activeSid, streamId);
       _completeAutomaticCompressionOnLiveProgress(activeSid);
       const tc=upsertLiveToolCall(d,'start');
       if(!tc) return;

@@ -31,6 +31,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 @pytest.fixture(autouse=True)
 def _restore_auth_sessions():
     """Snapshot and restore api.auth._sessions — see test_1058 for the rationale."""
+    if os.environ.get("HERMES_WEBUI_PYTHON"):
+        os.environ["HERMES_AGENT_PYTHON"] = os.environ["HERMES_WEBUI_PYTHON"]
     import api.auth as _auth
     snapshot = dict(_auth._sessions)
     yield
@@ -457,7 +459,12 @@ class TestFrontendWiring:
             }})().catch(err=>{{console.error(err); process.exit(1);}});
             """
         )
-        subprocess.run([node, "-e", script], check=True, capture_output=True, text=True)
+        try:
+            subprocess.run([node, "-e", script], check=True, capture_output=True, text=True)
+        except subprocess.CalledProcessError as exc:
+            print(exc.stdout)
+            print(exc.stderr, file=sys.stderr)
+            raise
 
     def test_attachment_only_steer_indicator_uses_file_label(self):
         import json
@@ -612,6 +619,111 @@ class TestFrontendWiring:
             """
         )
         subprocess.run([node, "-e", script], check=True, capture_output=True, text=True)
+
+    def _run_steer_consumption_script(self, statements):
+        """Evaluate the production arming/consumption helpers in Node."""
+        import json
+        import shutil
+        import subprocess
+        import textwrap
+
+        node = shutil.which("node")
+        if not node:  # pragma: no cover
+            pytest.skip("node not available")
+        assert node is not None
+
+        helper_start = self.msgs.find("const _STEER_CONSUMPTION_ARMED = {};")
+        assert helper_start >= 0
+        helper_end = self.msgs.find("\nfunction attachLiveStream(", helper_start)
+        assert helper_end > helper_start
+        helper_src = self.msgs[helper_start:helper_end]
+        try_body = _source_between(self.cmds, "async function _trySteer(", "\nasync function cmdTitle")
+        combined_src = helper_src.replace('const _STEER_CONSUMPTION_ARMED = {};', 'globalThis._STEER_CONSUMPTION_ARMED = {};').replace('function _armSteerConsumption', 'globalThis._armSteerConsumption = function').replace('function _resetSteerConsumptionArming', 'globalThis._resetSteerConsumptionArming = function').replace('function _consumeArmedSteer', 'globalThis._consumeArmedSteer = function') + "\n" + try_body
+        script = textwrap.dedent(
+            f"""
+            const assert = require('assert');
+            globalThis.S = {{ session: {{ session_id: 'A', active_stream_id: 'stream-1' }}, pendingFiles: [], activeStreamId: 'stream-1' }};
+            const counts = {{ A: 1 }};
+            const clearCalls = [];
+            globalThis._steerPendingCounts = counts;
+            globalThis.clearSteerPending = (sid) => {{
+              clearCalls.push(sid);
+              delete counts[sid];
+            }};
+            globalThis._steerOwnerIsCurrent = (sid) => sid === 'A';
+            globalThis._armSteerConsumption = (sid, streamId) => {{
+              _STEER_CONSUMPTION_ARMED[sid] = {{ streamId, armed: true }};
+            }};
+            globalThis.$ = () => null;
+            globalThis.api = async () => ({{ accepted: true }});
+            globalThis._steerTextWithPendingFiles = async (text) => text;
+            globalThis._steerFallbackIsDeadRun = () => false;
+            globalThis._steerOwnerStreamIsCurrent = () => true;
+            globalThis._steerClearCurrentOwnerDeadRun = () => false;
+            globalThis._showSteerRecovery = () => {{}};
+            globalThis._steerIndicatorText = () => '';
+            globalThis.t = (key) => key;
+            globalThis._steerSetComposerStatusForOwner = () => {{}};
+            globalThis._showSteerIndicator = () => {{}};
+            globalThis._steerIndicatorText = () => '';
+            globalThis.getSteerPendingCount = (sid) => counts[sid] || 0;
+            globalThis._setSteerPendingCount = (sid, count) => {{ if (count) counts[sid] = count; else delete counts[sid]; }};
+            globalThis._updateSteerPendingIndicatorStatus = () => {{}};
+            globalThis.showToast = () => {{}};
+            eval({json.dumps(combined_src)});
+            (async()=>{{
+              {statements}
+            }})().catch(err => {{
+              console.error(err);
+              process.exit(1);
+            }});
+            """
+        )
+        try:
+            subprocess.run([node, "-e", script], check=True, capture_output=True, text=True)
+        except subprocess.CalledProcessError as exc:
+            print(exc.stdout)
+            print(exc.stderr, file=sys.stderr)
+            raise
+
+    def test_steer_event_before_submission_does_not_clear_pending_count(self):
+        """A pre-submit boundary must not consume a steer accepted later."""
+        self._run_steer_consumption_script(
+            "assert.strictEqual(_consumeArmedSteer('A', 'stream-1'), false);\n"
+            "assert.deepStrictEqual(clearCalls, []);\n"
+            "assert.strictEqual(counts.A, 1);\n"
+        )
+
+    def test_next_tool_call_after_accepted_steer_clears_count(self):
+        """A live `tool` event after the accepted steer means the batch was drained."""
+        self._run_steer_consumption_script(
+            "assert.strictEqual(await _trySteer('continue with this', true), true);\n"
+            "assert.strictEqual(_STEER_CONSUMPTION_ARMED.A.streamId, 'stream-1');\n"
+            "assert.strictEqual(_consumeArmedSteer('A', 'stream-1'), true);\n"
+            "assert.deepStrictEqual(clearCalls, ['A']);\n"
+            "assert.strictEqual(counts.A, undefined);\n"
+            "assert.strictEqual(_STEER_CONSUMPTION_ARMED.A, undefined);\n"
+        )
+
+    def test_all_accumulated_steers_clear_at_one_boundary(self):
+        """Agent drains concatenated pending steers once; one boundary clears all."""
+        self._run_steer_consumption_script(
+            "counts.A = 2;\n"
+            "assert.strictEqual(await _trySteer('second steer', true), true);\n"
+            "assert.strictEqual(_consumeArmedSteer('A', 'stream-1'), true);\n"
+            "assert.deepStrictEqual(clearCalls, ['A']);\n"
+            "assert.strictEqual(counts.A, undefined);\n"
+        )
+
+    def test_reconnect_before_boundary_preserves_consumption_signal(self):
+        """Reattaching the same stream must not lose the post-submit boundary arm."""
+        self._run_steer_consumption_script(
+            "assert.strictEqual(await _trySteer('continue with this', true), true);\n"
+            "_resetSteerConsumptionArming('A', 'stream-1', { reconnecting: true });\n"
+            "assert.strictEqual(_STEER_CONSUMPTION_ARMED.A.armed, true);\n"
+            "assert.strictEqual(_consumeArmedSteer('A', 'stream-1'), true);\n"
+            "assert.deepStrictEqual(clearCalls, ['A']);\n"
+        )
 
     def test_clear_steer_pending_refreshes_display(self):
         """Explicit clear is the only function that moves count to zero."""
