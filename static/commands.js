@@ -1550,6 +1550,33 @@ function _steerIndicatorText(originalMsg, filesSnapshot){
   return names.length?`Attached files: ${names.join(', ')}`:'Attached files';
 }
 
+const _steerPendingCounts = (typeof window!=="undefined"&&window._steerPendingCounts)||{};
+if(typeof window!=="undefined")window._steerPendingCounts=_steerPendingCounts;
+function _currentSteerSessionId(){
+  return (typeof S!=="undefined"&&S&&S.session&&S.session.session_id)||null;
+}
+function _setSteerPendingCount(sid,count){
+  if(!sid)return 0;
+  const value=Math.max(0,Number(count)||0);
+  if(value)_steerPendingCounts[sid]=value;
+  else delete _steerPendingCounts[sid];
+  return value;
+}
+function getSteerPendingCount(sid){
+  sid=sid||_currentSteerSessionId();
+  return sid?(_steerPendingCounts[sid]||0):0;
+}
+function _steerPendingIndicatorStatus(count){
+  const n=Math.max(0,Number(count)||0);
+  if(n<=0) return '';
+  return `${t('queued_count',n)} pending steer`;
+}
+
+function _updateSteerPendingIndicatorStatus(count){
+  if(typeof setComposerStatus!=='function') return;
+  setComposerStatus(_steerPendingIndicatorStatus(count));
+}
+
 async function _steerPersistDraftForOwner(ownerSid, originalMsg, explicitSteer, filesSnapshot){
   if(!ownerSid||typeof _saveComposerDraftNow!=='function')return;
   await _saveComposerDraftNow(ownerSid,_steerRestoreText(originalMsg,explicitSteer),filesSnapshot);
@@ -1668,6 +1695,8 @@ async function _trySteer(msg, explicitSteer){
       }
       _showSteerIndicator(_steerIndicatorText(originalMsg,pendingFilesSnapshot));
     }
+    _setSteerPendingCount(ownerSid,getSteerPendingCount(ownerSid)+1);
+    if(_steerOwnerIsCurrent(ownerSid)) _updateSteerPendingIndicatorStatus(getSteerPendingCount(ownerSid));
     showToast(t('cmd_steer_delivered'),2500);
     return true;
   }

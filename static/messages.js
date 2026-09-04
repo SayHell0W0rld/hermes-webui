@@ -6464,6 +6464,7 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
             profile:S.activeProfile||'default',
           });
           if(typeof updateQueueBadge==='function') updateQueueBadge(sid);
+          if(typeof updateSteerPendingBadge==='function') updateSteerPendingBadge(sid);
           showToast(t('steer_leftover_queued'),3000);
         }
       }catch(_){}

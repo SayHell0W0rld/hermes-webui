@@ -123,6 +123,39 @@ class TestHandleChatSteerHappyPath:
         body = _captured_response(handler)
         assert body == {"accepted": True, "fallback": None, "stream_id": stream_id}
 
+    def test_accepts_multiple_steers_in_order(self, _clear_caches):
+        """Repeated accepted steers must all reach agent.steer() in submit order.
+
+        The CLI concatenates pending steer payloads at the next tool-result
+        boundary.  WebUI must not add a frontend/server slot that replaces the
+        first steer with the second.
+        """
+        from api.streaming import _handle_chat_steer
+        from api.config import SESSION_AGENT_CACHE, SESSION_AGENT_CACHE_LOCK, STREAMS, STREAMS_LOCK
+        sid, stream_id = "sid_multi_steer", "stream_multi_steer"
+        agent = MagicMock()
+        agent.steer = MagicMock(return_value=True)
+        with SESSION_AGENT_CACHE_LOCK:
+            SESSION_AGENT_CACHE[sid] = (agent, "sig")
+        with STREAMS_LOCK:
+            import queue as _q
+            STREAMS[stream_id] = _q.Queue()
+
+        sess = MagicMock()
+        sess.active_stream_id = stream_id
+        with patch("api.streaming.get_session", return_value=sess):
+            handler = _make_handler()
+            for text in ("first steer", "second steer", "third steer"):
+                assert _handle_chat_steer(handler, {"session_id": sid, "text": text}) is not False
+
+        assert agent.steer.call_args_list == [
+            unittest.mock.call("first steer"),
+            unittest.mock.call("second steer"),
+            unittest.mock.call("third steer"),
+        ]
+        body = _captured_response(handler)
+        assert body == {"accepted": True, "fallback": None, "stream_id": stream_id}
+
 
 class TestHandleChatSteerFallbacks:
     """Each gate that fails returns a structured fallback the frontend can branch on."""
@@ -412,6 +445,7 @@ class TestFrontendWiring:
               return {{accepted:true}};
             }}
             eval({json.dumps(steer_src)});
+            _setSteerPendingCount('A', 1);
             (async()=>{{
               const delivered = await _trySteer('hint', false);
               assert.strictEqual(delivered, true);
@@ -467,6 +501,46 @@ class TestFrontendWiring:
               assert.strictEqual(indicatorText, 'Attached files: a.pdf');
               assert.ok(apiPayload.text.includes('[Attached files for this steer: /tmp/a.pdf]'));
               assert.ok(!indicatorText.includes('file tools/read_file'));
+            }})().catch(err=>{{console.error(err); process.exit(1);}});
+            """
+        )
+        subprocess.run([node, "-e", script], check=True, capture_output=True, text=True)
+
+    def test_multiple_accepted_steers_preserve_pending_count(self):
+        """The visible pending-steer count must grow, not collapse to one steer."""
+        import json
+        import shutil
+        import subprocess
+        import textwrap
+
+        node = shutil.which("node")
+        if not node:  # pragma: no cover
+            pytest.skip("node not available")
+        assert node is not None
+
+        steer_src = _source_between(
+            self.cmds,
+            "function _steerUploadedAttachmentPaths",
+            "\nasync function cmdTitle",
+        )
+        script = textwrap.dedent(
+            f"""
+            const assert = require('assert');
+            let S = {{session:{{session_id:'A'}}, pendingFiles:[]}};
+            let status = null;
+            function t(key, arg){{ return `${{key}}:${{arg ?? ''}}`; }}
+            function _showSteerIndicator(){{}}
+            function _showSteerRecovery(){{}}
+            function _clearComposerDraft(){{}}
+            function showToast(){{}}
+            async function api(){{ return {{accepted:true}}; }}
+            globalThis.setComposerStatus = (value) => {{ status = value; }};
+            eval({json.dumps(steer_src)});
+            _setSteerPendingCount('A', 1);
+            (async()=>{{
+              const delivered = await _trySteer('second steer', true);
+              assert.strictEqual(delivered, true);
+              assert.strictEqual(status, 'queued_count:2 pending steer');
             }})().catch(err=>{{console.error(err); process.exit(1);}});
             """
         )
