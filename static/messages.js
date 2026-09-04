@@ -2168,8 +2168,13 @@ function _trackSteerToolComplete(sessionId, streamId, toolCallId){
   const current = _STEER_TOOL_BATCHES[sid];
   if(!current || current.streamId !== activeStreamId) return true;
   if(!current.ids.has(toolId)){
-    delete _STEER_TOOL_BATCHES[sid];
-    return true;
+    // An untracked completion (e.g. the tool_start was missed across a
+    // same-stream reconnect) carries no batch-boundary information: the
+    // sibling tools of the batch may still be running and the backend only
+    // drains at batch finalize. Ignore it — do NOT destroy the tracked set
+    // and do NOT report a boundary (greptile P1 2026-09-04T15:33). A truly
+    // stalled batch is still bounded by done/setBusy/leftover clears.
+    return false;
   }
   current.ids.delete(toolId);
   if(current.ids.size === 0){

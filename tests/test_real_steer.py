@@ -764,14 +764,21 @@ class TestFrontendWiring:
             "assert.strictEqual(_trackSteerToolComplete('A', 'stream-1', 'tool-2'), true);\n"
         )
 
-    def test_unknown_tool_completion_fails_open(self):
-        """Missing ids or lost tracking state preserve the pre-R5 behavior."""
+    def test_unknown_tool_completion_ignores_and_preserves_batch(self):
+        """Greptile P1 (2026-09-04T15:33): an untracked completion (tool_start
+        missed across a same-stream reconnect) carries no boundary information
+        — it must neither destroy the tracked set nor consume the steer, since
+        sibling tools may still be running when the backend only drains at
+        batch finalize. Missing/empty ids and lost tracking state keep the
+        pre-R5 open behavior (no tracked batch to reason about)."""
         self._run_steer_consumption_script(
             "assert.strictEqual(await _trySteer('continue with this', true), true);\n"
             "_trackSteerToolStart('A', 'stream-1', 'tool-1');\n"
-            "assert.strictEqual(_trackSteerToolComplete('A', 'stream-1', 'tool-2'), true, 'unknown id must fail open');\n"
-            "assert.strictEqual(_consumeArmedSteer('A', 'stream-1'), true, 'unknown id must fail open');\n"
+            "assert.strictEqual(_trackSteerToolComplete('A', 'stream-1', 'tool-2'), false, 'unknown id carries no boundary info');\n"
+            "assert.strictEqual(_consumeArmedSteer('A', 'stream-1'), false, 'unknown id must not consume');\n"
+            "assert.strictEqual(_STEER_TOOL_BATCHES.A.ids.has('tool-1'), true, 'tracked sibling must survive');\n"
             "assert.strictEqual(_trackSteerToolComplete('A', 'stream-1', ''), true);\n"
+            "assert.strictEqual(_trackSteerToolComplete('A', 'stream-1', 'tool-1'), true, 'tracked id completes the batch');\n"
         )
 
     def test_clear_inflight_state_releases_batch_tracking(self):
