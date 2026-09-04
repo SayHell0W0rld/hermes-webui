@@ -8663,10 +8663,15 @@ function _updateQueuePill(sid,count){
 function updateSteerPendingBadge(sessionId){
   const sid=sessionId||_currentSteerSessionId();
   if(!sid)return;
-  const count=getSteerPendingCount(sid);
-  if(count===0)delete _steerPendingCounts[sid];
+  // Both callers mean "this session's pending steer buffer has been consumed
+  // or re-queued" — the pending_steer_leftover handler re-queues the drained
+  // text as a queued session message, and the setBusy(false) drain path runs
+  // after the turn consumed its steers at tool-result boundaries. Clear the
+  // count instead of rereading it, otherwise a stale value survives and the
+  // next steer increments from the wrong base.
+  _setSteerPendingCount(sid,0);
   if(_steerOwnerIsCurrent(sid)&&typeof setComposerStatus==='function'){
-    _updateSteerPendingIndicatorStatus(count);
+    _updateSteerPendingIndicatorStatus(0);
   }
 }
 function updateQueueBadge(sessionId){

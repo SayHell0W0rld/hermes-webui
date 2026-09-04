@@ -179,6 +179,28 @@ Open questions:
   need a separate scoped affordance later?
 - The current preference is not to change the Stop icon in the first version.
 
+## Steer Pending Visibility
+
+Repeated Steer submits within one active run are all accepted and consumed in
+order — the agent core concatenates pending steer payloads at the next
+tool-result boundary. To make that visible, the composer tracks a per-session
+pending-steer count:
+
+- Each accepted Steer delivery increments the owning session's count and the
+  composer status shows `N pending steer` (reusing the `queued_count` i18n
+  key), so the user can tell a second Steer was delivered rather than
+  silently replaced.
+- The count clears when the session's pending-steer buffer is consumed or
+  re-queued: on `pending_steer_leftover` (unconsumed text is queued as a
+  session message for the next turn) and on turn completion
+  (`setBusy(false)` drain path).
+- The count is per-owner-session: steering session A then switching to
+  session B shows B's count (likely empty), not A's.
+
+Open question carried from review: should the pending count also render as a
+badge on the session list entry for non-active owner sessions (same treatment
+as the queued-message badge)?
+
 ## Steer Live-to-Final Rendering
 
 Steer is not only a temporary live UI state. It must preserve meaning in both

@@ -324,6 +324,7 @@ class TestFrontendWiring:
         cls.cmds = (Path(__file__).parent.parent / "static" / "commands.js").read_text(encoding="utf-8")
         cls.msgs = (Path(__file__).parent.parent / "static" / "messages.js").read_text(encoding="utf-8")
         cls.i18n = (Path(__file__).parent.parent / "static" / "i18n.js").read_text(encoding="utf-8")
+        cls.ui = (Path(__file__).parent.parent / "static" / "ui.js").read_text(encoding="utf-8")
 
     def test_cmd_steer_calls_endpoint(self):
         idx = self.cmds.find("async function cmdSteer(")
@@ -542,6 +543,57 @@ class TestFrontendWiring:
               assert.strictEqual(delivered, true);
               assert.strictEqual(status, 'queued_count:2 pending steer');
             }})().catch(err=>{{console.error(err); process.exit(1);}});
+            """
+        )
+        subprocess.run([node, "-e", script], check=True, capture_output=True, text=True)
+
+    def test_update_steer_pending_badge_clears_count(self):
+        """updateSteerPendingBadge means 'buffer consumed/re-queued' — it must
+        clear the count, not reread it. Greptile P1: the original reread kept a
+        stale pending value alive so the next steer incremented from it."""
+        import json
+        import shutil
+        import subprocess
+        import textwrap
+
+        node = shutil.which("node")
+        if not node:  # pragma: no cover
+            pytest.skip("node not available")
+        assert node is not None
+
+        ui_src = _source_between(
+            self.ui,
+            "function updateSteerPendingBadge",
+            "function updateQueueBadge",
+        )
+        script = textwrap.dedent(
+            f"""
+            const assert = require('assert');
+            let status = null;
+            globalThis.setComposerStatus = (value) => {{ status = value; }};
+            const counts = {{}};
+            globalThis._steerPendingCounts = counts;
+            globalThis._currentSteerSessionId = () => 'A';
+            globalThis._steerOwnerIsCurrent = () => true;
+            // Do NOT mock _updateSteerPendingIndicatorStatus: we assert the
+            // real commands.js chain (indicator -> setComposerStatus) resets
+            // the composer status through it. But ui.js's badge fn calls it
+            // directly, so provide the real one via a spy wrapper.
+            let lastIndicator = undefined;
+            globalThis._updateSteerPendingIndicatorStatus = (count) => {{
+              lastIndicator = count;
+              if (typeof setComposerStatus === 'function') setComposerStatus(count === 0 || count === undefined ? '' : ('queued_count:' + count + ' pending steer'));
+            }};
+            globalThis._setSteerPendingCount = (sid, n) => {{
+              if (n) counts[sid] = n; else delete counts[sid];
+              return n;
+            }};
+            globalThis.getSteerPendingCount = (sid) => counts[sid] || 0;
+            eval({json.dumps(ui_src)});
+            counts['A'] = 2; // two steers pending
+            updateSteerPendingBadge('A');
+            assert.strictEqual(counts['A'], undefined, 'count must be cleared');
+            assert.strictEqual(status, '', 'composer status must reset to empty');
             """
         )
         subprocess.run([node, "-e", script], check=True, capture_output=True, text=True)
