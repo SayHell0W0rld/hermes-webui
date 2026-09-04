@@ -548,7 +548,7 @@ class TestFrontendWiring:
             (async()=>{{
               const delivered = await _trySteer('second steer', true);
               assert.strictEqual(delivered, true);
-              assert.strictEqual(status, 'queued_count:2 steer delivered to tool boundary');
+              assert.strictEqual(status, 'steer_pending_count:2');
             }})().catch(err=>{{console.error(err); process.exit(1);}});
             """
         )
@@ -707,7 +707,7 @@ class TestFrontendWiring:
         )
 
     def test_parallel_batch_completion_requires_all_tool_ids(self):
-        """Only the final completion in a parallel batch drains accepted steers."""
+        """Finalized tool batches drain accepted steers once, onto their last result."""
         self._run_steer_consumption_script(
             "assert.strictEqual(await _trySteer('continue with this', true), true);\n"
             "_trackSteerToolStart('A', 'stream-1', 'tool-1');\n"
@@ -764,6 +764,27 @@ class TestFrontendWiring:
             "assert.strictEqual(_trackSteerToolComplete('A', 'stream-1', 'tool-1'), true);\n"
         )
 
+    def test_new_stream_reattach_clears_stale_pending_count(self):
+        """A different stream is a turn boundary and must expire stale pending state."""
+        self._run_steer_consumption_script(
+            "assert.strictEqual(await _trySteer('continue with this', true), true);\n"
+            "_resetSteerConsumptionArming('A', 'stream-2');\n"
+            "assert.strictEqual(_STEER_CONSUMPTION_ARMED.A, undefined);\n"
+            "assert.strictEqual(counts.A, undefined, 'a new stream must clear the stale pending count');\n"
+            "assert.deepStrictEqual(clearCalls, []);\n"
+        )
+
+    def test_same_stream_reconnect_preserves_pending_count(self):
+        """Reconnecting to the same stream keeps the pending steer live."""
+        self._run_steer_consumption_script(
+            "assert.strictEqual(await _trySteer('continue with this', true), true);\n"
+            "_resetSteerConsumptionArming('A', 'stream-1', { reconnecting: true });\n"
+            "assert.strictEqual(_STEER_CONSUMPTION_ARMED.A.armed, true);\n"
+            "assert.strictEqual(counts.A, 1, 'the same stream reconnect must preserve the pending count');\n"
+            "assert.strictEqual(_consumeArmedSteer('A', 'stream-1'), true);\n"
+            "assert.deepStrictEqual(clearCalls, ['A']);\n"
+        )
+
     def test_tool_completion_after_accepted_steer_clears_count(self):
         """A post-submit tool result is the earliest observable drain boundary."""
         listener_start = self.msgs.find("source.addEventListener('tool',e=>{")
@@ -794,6 +815,17 @@ class TestFrontendWiring:
             "assert.strictEqual(await _trySteer('continue with this', true), true);\n"
             "_resetSteerConsumptionArming('A', 'stream-1', { reconnecting: true });\n"
             "assert.strictEqual(_STEER_CONSUMPTION_ARMED.A.armed, true);\n"
+            "assert.strictEqual(_consumeArmedSteer('A', 'stream-1'), true);\n"
+            "assert.deepStrictEqual(clearCalls, ['A']);\n"
+        )
+
+    def test_same_stream_reconnect_preserves_pending_count(self):
+        """Reconnecting to the same stream keeps the pending steer live."""
+        self._run_steer_consumption_script(
+            "assert.strictEqual(await _trySteer('continue with this', true), true);\n"
+            "_resetSteerConsumptionArming('A', 'stream-1', { reconnecting: true });\n"
+            "assert.strictEqual(_STEER_CONSUMPTION_ARMED.A.armed, true);\n"
+            "assert.strictEqual(counts.A, 2, 'the same stream reconnect must preserve the pending count');\n"
             "assert.strictEqual(_consumeArmedSteer('A', 'stream-1'), true);\n"
             "assert.deepStrictEqual(clearCalls, ['A']);\n"
         )
@@ -1337,7 +1369,7 @@ class TestFrontendWiring:
 # ── i18n keys ─────────────────────────────────────────────────────────────
 
 class TestI18nKeys:
-    """The two new keys (cmd_steer_delivered, steer_leftover_queued) must be in all 6 locales."""
+    """Steer-facing user copy must exist in every locale block."""
 
     @classmethod
     def setup_class(cls):
@@ -1347,6 +1379,12 @@ class TestI18nKeys:
         assert self.i18n.count("cmd_steer_delivered:") >= 6, (
             f"cmd_steer_delivered appears {self.i18n.count('cmd_steer_delivered:')} times; "
             f"expected ≥6 (one per locale)"
+        )
+
+    def test_steer_pending_count_in_all_locales(self):
+        assert self.i18n.count("steer_pending_count:") == 15, (
+            f"steer_pending_count appears {self.i18n.count('steer_pending_count:')} times; "
+            f"expected 15 (one per locale)"
         )
 
     def test_steer_leftover_queued_in_all_locales(self):

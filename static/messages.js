@@ -2126,11 +2126,10 @@ function _dispatchExtensionTurnLifecycle(type,sessionId,streamId,details={}){
   }
 }
 
-// A steer is consumed at a tool-result boundary.  The agent drains it after
-// each tool result is appended, including the last result in a parallel batch.
-// Therefore the first post-acceptance `tool_complete` event is an earlier
-// reliable UI boundary than the next `tool` event, which never arrives when the
-// model continues with prose or finishes the turn.
+// A steer is consumed at the finalized tool-batch boundary.  The agent drains
+// once per batch and appends it to the batch's last tool-role result.  Therefore
+// that boundary is an earlier reliable UI boundary than the next `tool` event,
+// which never arrives when the model continues with prose or finishes the turn.
 const _STEER_CONSUMPTION_ARMED = {};
 const _STEER_TOOL_BATCHES = {};
 function _resetSteerToolBatch(sessionId, streamId, options={}){
@@ -2194,6 +2193,7 @@ function _resetSteerConsumptionArming(sessionId, streamId, options={}){
   const current = _STEER_CONSUMPTION_ARMED[sid];
   if(options && options.reconnecting && current && current.streamId === activeStreamId && current.armed) return;
   delete _STEER_CONSUMPTION_ARMED[sid];
+  if(current && current.streamId !== activeStreamId) _setSteerPendingCount(sid, 0);
 }
 function _consumeArmedSteer(sessionId, streamId){
   const sid = String(sessionId || '');
