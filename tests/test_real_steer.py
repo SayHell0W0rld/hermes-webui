@@ -1024,14 +1024,62 @@ class TestFrontendWiring:
         _resetSteerConsumptionArming; the count stays 0 and nothing is
         consumed."""
         self._run_steer_consumption_script(
-            # counts.A starts at 0: nothing pending before this submission.
+            # Real timeout shape: no accepted steer exists yet, so the count is
+            # 0 (delete the harness seed — a count>0 here would mean a sibling
+            # steer is genuinely pending, which is the concurrent-failure case
+            # covered by test_concurrent_failure_keeps_sibling_accepted_arm).
+            "delete counts.A;\n"
             "globalThis.api = async () => { throw new Error('timeout'); };\n"
             "assert.strictEqual(await _trySteer('will time out', true), false);\n"
             "assert.strictEqual(_STEER_CONSUMPTION_ARMED.A, undefined, 'timeout must release the pre-arm');\n"
-            "assert.strictEqual(counts.A, 1, 'timeout path must not touch the count (harness initial value)');\n"
+            "assert.strictEqual(counts.A, undefined, 'timeout path must not touch the count');\n"
             "assert.deepStrictEqual(clearCalls, [], 'nothing was consumed');\n"
             # And a boundary arriving on the still-running stream consumes nothing.
             "assert.strictEqual(_consumeArmedSteer('A', 'stream-1'), false);\n"
+        )
+
+    def test_concurrent_failure_keeps_sibling_accepted_arm(self):
+        """Greptile P1 (2026-09-05T04:07): two steers race on the same session
+        and stream; one resolves accepted (count > 0, arm waiting for the
+        boundary) before the other fails. The failed fallback's
+        _resetSteerConsumptionArming must not delete the shared arm — the
+        accepted steer's count would otherwise strand until turn end. A bare
+        arm with no pending payload still gets cleared, and a stream change
+        still clears everything."""
+        self._run_steer_consumption_script(
+            # steer#1 accepted mid-run: count raised, arm installed, waiting.
+            "assert.strictEqual(await _trySteer('sibling accepted', true), true);\n"
+            "assert.strictEqual(counts.A, 2);\n"
+            "assert.strictEqual(_STEER_CONSUMPTION_ARMED.A.armed, true);\n"
+            # steer#2 on the same session+stream fails after steer#1 resolved.
+            "globalThis.api = async () => ({ accepted: false, fallback: 'busy' });\n"
+            "assert.strictEqual(await _trySteer('sibling failed', true), false);\n"
+            "assert.strictEqual(counts.A, 2, 'the failed sibling must not touch the accepted count');\n"
+            "assert.strictEqual(_STEER_CONSUMPTION_ARMED.A.armed, true, 'failure release must keep the sibling accepted arm');\n"
+            # The next real boundary still consumes the accepted steer.
+            "assert.strictEqual(_consumeArmedSteer('A', 'stream-1'), true);\n"
+            "assert.deepStrictEqual(clearCalls, ['A']);\n"
+            "assert.strictEqual(counts.A, undefined);\n"
+        )
+
+    def test_reset_still_clears_bare_arm_and_stream_change(self):
+        """The count>0 protection only covers arms whose stream still holds
+        pending payload: a bare arm with count 0 is released as before, and a
+        stream change (attach/detach) clears both arm and stale count."""
+        self._run_steer_consumption_script(
+            # Bare arm, no pending payload → submission release still works.
+            "counts.A = 0;\n"
+            "globalThis.api = async () => ({ accepted: false, fallback: 'busy' });\n"
+            "assert.strictEqual(await _trySteer('fails with count 0', true), false);\n"
+            "assert.strictEqual(_STEER_CONSUMPTION_ARMED.A, undefined, 'bare arm still released');\n"
+            # Stream change → full clear (arm + stale count). The arm belongs
+            # to stream-9; a reset against a DIFFERENT stream id is the
+            # attach/detach path and clears everything, count included.
+            "counts.A = 2;\n"
+            "_armSteerConsumption('A', 'stream-9');\n"
+            "_resetSteerConsumptionArming('A', 'stream-8');\n"
+            "assert.strictEqual(_STEER_CONSUMPTION_ARMED.A, undefined, 'stream-change full clear');\n"
+            "assert.strictEqual(counts.A, undefined, 'stale count expired on stream change');\n"
         )
 
     def test_tool_completion_after_accepted_steer_clears_count(self):
