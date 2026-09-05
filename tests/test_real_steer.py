@@ -1062,6 +1062,41 @@ class TestFrontendWiring:
             "assert.strictEqual(counts.A, undefined);\n"
         )
 
+    def test_failure_first_overlap_rearms_on_acceptance(self):
+        """Greptile P1 (2026-09-05T04:29): two steers overlap on the same
+        session and stream — #2's submit (with its pre-arm) happens while #1
+        is still in flight, and #1 then fails, releasing the shared arm before
+        #2 resolves accepted. Acceptance must re-arm idempotently before
+        raising the count, otherwise the raised count never sees a boundary
+        consume and strands until turn end."""
+        self._run_steer_consumption_script(
+            "counts.A = 0;\n"
+            # #1's POST hangs until #2 has submitted, then fails — so the
+            # failure release lands AFTER #2's pre-arm and BEFORE #2's accept.
+            "let release1 = null;\n"
+            "const originalApi = globalThis.api;\n"
+            "globalThis.api = (url, options) => new Promise(resolve => {\n"
+            "  release1 = () => resolve({ accepted: false, fallback: 'busy' });\n"
+            "});\n"
+            "const first = _trySteer('in flight then fails', true);\n"
+            "await Promise.resolve();\n"
+            "await Promise.resolve();\n"
+            # #2 submits while #1 is still hanging: its pre-arm is a no-op
+            # (already armed), but it moves the arm's lifecycle forward.
+            "globalThis.api = async () => ({ accepted: true });\n"
+            "const second = _trySteer('overlapping accepted', true);\n"
+            "await Promise.resolve();\n"
+            "if (typeof release1 !== 'function') throw new Error('#1 api stub never captured a resolver');\n"
+            "release1();\n"
+            "assert.strictEqual(await first, false, '#1 failed');\n"
+            "assert.strictEqual(await second, true, '#2 accepted');\n"
+            "assert.strictEqual(counts.A, 1, '#2 raised the count 0→1');\n"
+            "assert.strictEqual(_STEER_CONSUMPTION_ARMED.A.armed, true, 'acceptance re-armed after #1 released the shared arm');\n"
+            "assert.strictEqual(_consumeArmedSteer('A', 'stream-1'), true);\n"
+            "assert.deepStrictEqual(clearCalls, ['A']);\n"
+            "assert.strictEqual(counts.A, undefined);\n"
+        )
+
     def test_reset_still_clears_bare_arm_and_stream_change(self):
         """The count>0 protection only covers arms whose stream still holds
         pending payload: a bare arm with count 0 is released as before, and a
