@@ -654,7 +654,17 @@ class TestFrontendWiring:
             }};
             globalThis._steerOwnerIsCurrent = (sid) => sid === 'A';
             globalThis._armSteerConsumption = (sid, streamId) => {{
-              _STEER_CONSUMPTION_ARMED[sid] = {{ streamId, armed: true }};
+              const current = _STEER_CONSUMPTION_ARMED[sid];
+              if (current && current.streamId === streamId && current.armed) {{
+                if (current.consumed) {{
+                  delete _STEER_CONSUMPTION_ARMED[sid];
+                  clearSteerPending(sid);
+                  return true;
+                }}
+                return true;
+              }}
+              _STEER_CONSUMPTION_ARMED[sid] = {{ streamId, armed: true, consumed: false }};
+              return true;
             }};
             globalThis.$ = () => null;
             globalThis.api = async () => ({{ accepted: true }});
@@ -965,23 +975,20 @@ class TestFrontendWiring:
         )
 
     def test_midawait_boundary_keeps_prearm_for_first_steer_of_turn(self):
-        """Manny review round 2: the first steer of a turn starts with count=0
-        (the accepted response raises it to 1 afterwards). If a tool-batch
-        boundary lands while the POST is in flight, _consumeArmedSteer runs
-        armed with count 0 — it must keep the arm (this 'submit in flight'
-        state is the only window where count-0-but-armed exists), so the
-        boundary that follows the accepted response still consumes it.
+        """Round-2 invariant: a boundary during an in-flight POST must not
+        disarm the arm. If a tool-batch boundary lands while the POST is in
+        flight, _consumeArmedSteer runs armed with count 0 and must keep the
+        arm until either the next real boundary consumes it or the delayed
+        response reconciles the boundary.
 
         The api stub fires a mid-await boundary (the exact 0-count window)
         while the POST is unresolved, then resolves accepted. Harness audit
         note: the shared harness seeds counts.A=1, so this test explicitly
         deletes the entry first to make the 0→1 transition real."""
         self._run_steer_consumption_script(
-            # Real 0→1 transition: the harness seeds counts.A=1, but the first
-            # steer of a turn has NO pending count until the accepted response.
+            # Real 0-to-1 transition: delete the harness seed first.
             "delete counts.A;\n"
-            # api stub: consume attempt fires while the POST is in flight
-            # (count still 0), then the POST resolves accepted.
+            # Boundary fires inside the api stub while the POST is in flight.
             "globalThis.api = async () => {\n"
             "  const midAwait = _consumeArmedSteer('A', 'stream-1');\n"
             "  if (midAwait !== false) throw new Error('mid-await boundary must NOT consume at count 0');\n"
@@ -991,11 +998,35 @@ class TestFrontendWiring:
             "  return { accepted: true };\n"
             "};\n"
             "assert.strictEqual(await _trySteer('first steer', true), true);\n"
-            "assert.strictEqual(counts.A, 1, 'accepted response raised the count 0→1');\n"
-            "assert.strictEqual(_STEER_CONSUMPTION_ARMED.A.armed, true, 'pre-arm survived the mid-await window');\n"
-            "assert.strictEqual(_consumeArmedSteer('A', 'stream-1'), true, 'the next real boundary consumes the steer');\n"
-            "assert.deepStrictEqual(clearCalls, ['A']);\n"
+            "assert.strictEqual(counts.A, undefined, 'the boundary during the POST marked consumption; the accepted response reconciled it');\n"
+            "assert.strictEqual(_STEER_CONSUMPTION_ARMED.A, undefined, 'the reconciled arm was released');\n"
             "assert.strictEqual(counts.A, undefined);\n"
+        )
+
+    def test_boundary_during_post_reconciles_delayed_accepted_response(self):
+        # A boundary arriving while the POST is unresolved marks consumption.
+        # The browser-visible SSE boundary and the HTTP accepted response are
+        # independent queues. If the backend consumes the steer before the
+        # accepted response resolves, the response must not add a stale pending
+        # count after the boundary.
+        self._run_steer_consumption_script(
+            "delete counts.A;\n"
+            "let accept = null;\n"
+            "globalThis.api = () => new Promise(resolve => {\n"
+            "  accept = () => resolve({ accepted: true });\n"
+            "});\n"
+            "const first = _trySteer('racing steer', true);\n"
+            "await Promise.resolve();\n"
+            "await Promise.resolve();\n"
+            "await Promise.resolve();\n"
+            "assert.strictEqual(_STEER_CONSUMPTION_ARMED.A.armed, true, 'pre-arm must exist before the response');\n"
+            "assert.strictEqual(_consumeArmedSteer('A', 'stream-1'), false, 'count 0 cannot consume yet');\n"
+            "assert.strictEqual(_STEER_CONSUMPTION_ARMED.A.consumed, true, 'boundary must mark the pre-acceptance consumption');\n"
+            "accept();\n"
+            "assert.strictEqual(await first, true);\n"
+            "assert.strictEqual(counts.A, undefined, 'a consumed steer must not be counted by its delayed response');\n"
+            "assert.strictEqual(_STEER_CONSUMPTION_ARMED.A, undefined, 'the reconciled arm must be released');\n"
+            "assert.strictEqual(_consumeArmedSteer('A', 'stream-1'), false, 'no stale arm remains');\n"
         )
 
     def test_prearm_steer_consumption_before_accepted_response(self):

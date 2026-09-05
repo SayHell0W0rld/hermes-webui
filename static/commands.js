@@ -1700,7 +1700,12 @@ async function _trySteer(msg, explicitSteer){
     // released the shared arm while this POST was in flight (the failure path
     // sees count 0 and clears the slot). The accepted steer IS pending
     // payload from here on, so its arm must exist before the count rises.
-    if(ownerStreamId&&typeof _armSteerConsumption==='function') _armSteerConsumption(ownerSid,ownerStreamId);
+    if(ownerStreamId&&typeof _armSteerConsumption==='function'){
+      if(!_armSteerConsumption(ownerSid,ownerStreamId)){
+        showToast(t('cmd_steer_delivered'),2500);
+        return true;
+      }
+    }
     _setSteerPendingCount(ownerSid,getSteerPendingCount(ownerSid)+1);
     if(_steerOwnerIsCurrent(ownerSid)) _updateSteerPendingIndicatorStatus(getSteerPendingCount(ownerSid));
     showToast(t('cmd_steer_delivered'),2500);

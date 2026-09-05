@@ -2199,8 +2199,16 @@ function _armSteerConsumption(sessionId, streamId){
   const activeStreamId = String(streamId || '');
   if(!sid || !activeStreamId) return;
   const current = _STEER_CONSUMPTION_ARMED[sid];
-  if(current && current.streamId === activeStreamId && current.armed) return;
-  _STEER_CONSUMPTION_ARMED[sid] = { streamId: activeStreamId, armed: true };
+  if(current && current.streamId === activeStreamId && current.armed){
+    if(current.consumed){
+      delete _STEER_CONSUMPTION_ARMED[sid];
+      if(typeof clearSteerPending === 'function') clearSteerPending(sid);
+      return false;
+    }
+    return true;
+  }
+  _STEER_CONSUMPTION_ARMED[sid] = { streamId: activeStreamId, armed: true, consumed: false };
+  return true;
 }
 function _resetSteerConsumptionArming(sessionId, streamId, options={}){
   const sid = String(sessionId || '');
@@ -2238,14 +2246,12 @@ function _consumeArmedSteer(sessionId, streamId){
   const toolBatch = _STEER_TOOL_BATCHES[sid];
   if(toolBatch && toolBatch.streamId === activeStreamId && toolBatch.ids.size > 0) return false;
   if(typeof getSteerPendingCount !== 'function' || getSteerPendingCount(sid) <= 0){
-    // Manny review round 2: a count-0-but-armed state only exists while the
+    // A count-0-but-armed state exists while the
     // steer POST is in flight (arm installed pre-submit, count incremented
-    // on the accepted response). Deleting the arm here stranded the first
-    // steer of a turn when a tool-batch boundary landed mid-await — the
-    // accepted response then raised count to 1 with no arm left, so no later
-    // boundary ever consumed it. Keep the arm: the pre-submit protection is
-    // already the `!current || !current.armed` early return above, and
-    // failed/queued fallbacks release the arm via _resetSteerConsumptionArming.
+    // on the accepted response). Mark the boundary so a delayed accepted
+    // response cannot count a steer that was already applied; failed/queued
+    // fallbacks still release the arm via _resetSteerConsumptionArming.
+    current.consumed = true;
     return false;
   }
   if(typeof clearSteerPending !== 'function') return false;
