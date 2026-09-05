@@ -2195,6 +2195,10 @@ function _clearSteerConsumptionForStream(sessionId, streamId){
   }
 }
 function _armSteerConsumption(sessionId, streamId){
+  // TODO(#7434): the boolean `consumed` flag cannot attribute a boundary
+  // drain to individual steer requests when multiple are in flight. Replace
+  // with a `pendingBoundary: streamId` field + response-time reconciliation
+  // once the per-request consumed model lands.
   const sid = String(sessionId || '');
   const activeStreamId = String(streamId || '');
   if(!sid || !activeStreamId) return;
