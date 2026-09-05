@@ -997,6 +997,26 @@ class TestFrontendWiring:
             "assert.strictEqual(_STEER_CONSUMPTION_ARMED.A, undefined);\n"
         )
 
+    def test_network_timeout_releases_prearm(self):
+        """DeepSeek round-0 question, now locked by test: if the steer POST
+        never reaches the server (network timeout / 5xx), the pre-arm installed
+        at submit time must be released — otherwise a later accepted steer of
+        the same session would be consumed at the stale stream boundary from
+        the failed submission. The catch-all sets fallback=network_error and
+        the generic fallback path releases the arm via
+        _resetSteerConsumptionArming; the count stays 0 and nothing is
+        consumed."""
+        self._run_steer_consumption_script(
+            # counts.A starts at 0: nothing pending before this submission.
+            "globalThis.api = async () => { throw new Error('timeout'); };\n"
+            "assert.strictEqual(await _trySteer('will time out', true), false);\n"
+            "assert.strictEqual(_STEER_CONSUMPTION_ARMED.A, undefined, 'timeout must release the pre-arm');\n"
+            "assert.strictEqual(counts.A, 1, 'timeout path must not touch the count (harness initial value)');\n"
+            "assert.deepStrictEqual(clearCalls, [], 'nothing was consumed');\n"
+            # And a boundary arriving on the still-running stream consumes nothing.
+            "assert.strictEqual(_consumeArmedSteer('A', 'stream-1'), false);\n"
+        )
+
     def test_tool_completion_after_accepted_steer_clears_count(self):
         """A post-submit tool result is the earliest observable drain boundary."""
         listener_start = self.msgs.find("source.addEventListener('tool',e=>{")
