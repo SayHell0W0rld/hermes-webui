@@ -2224,7 +2224,14 @@ function _consumeArmedSteer(sessionId, streamId){
   const toolBatch = _STEER_TOOL_BATCHES[sid];
   if(toolBatch && toolBatch.streamId === activeStreamId && toolBatch.ids.size > 0) return false;
   if(typeof getSteerPendingCount !== 'function' || getSteerPendingCount(sid) <= 0){
-    delete _STEER_CONSUMPTION_ARMED[sid];
+    // Manny review round 2: a count-0-but-armed state only exists while the
+    // steer POST is in flight (arm installed pre-submit, count incremented
+    // on the accepted response). Deleting the arm here stranded the first
+    // steer of a turn when a tool-batch boundary landed mid-await — the
+    // accepted response then raised count to 1 with no arm left, so no later
+    // boundary ever consumed it. Keep the arm: the pre-submit protection is
+    // already the `!current || !current.armed` early return above, and
+    // failed/queued fallbacks release the arm via _resetSteerConsumptionArming.
     return false;
   }
   if(typeof clearSteerPending !== 'function') return false;

@@ -964,6 +964,23 @@ class TestFrontendWiring:
             "assert.deepStrictEqual(clearCalls, []);\n"
         )
 
+    def test_midawait_boundary_keeps_prearm_for_first_steer_of_turn(self):
+        """Manny review round 2: the first steer of a turn starts with count=0
+        (the accepted response raises it to 1 afterwards). If a tool-batch
+        boundary lands while the POST is in flight, _consumeArmedSteer runs
+        armed with count 0 — it must keep the arm (this 'submit in flight'
+        state is the only window where count-0-but-armed exists), so the
+        boundary that follows the accepted response still consumes it."""
+        self._run_steer_consumption_script(
+            # counts.A starts at 0 (harness default): first steer of the turn.
+            "assert.strictEqual(await _trySteer('first steer', true), true);\n"
+            "assert.strictEqual(counts.A, 2, 'accepted response raised the count (harness _trySteer +1)');\n"
+            "assert.strictEqual(_STEER_CONSUMPTION_ARMED.A.armed, true, 'mid-await boundary must NOT delete the pre-arm');\n"
+            "assert.strictEqual(_consumeArmedSteer('A', 'stream-1'), true, 'next boundary consumes the steer');\n"
+            "assert.deepStrictEqual(clearCalls, ['A']);\n"
+            "assert.strictEqual(counts.A, undefined);\n"
+        )
+
     def test_prearm_steer_consumption_before_accepted_response(self):
         """The backend may call agent.steer() before HTTP resolves and reach the
         next tool boundary before response processing resumes. Pre-arm on
