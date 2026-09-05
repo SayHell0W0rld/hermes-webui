@@ -970,13 +970,30 @@ class TestFrontendWiring:
         boundary lands while the POST is in flight, _consumeArmedSteer runs
         armed with count 0 — it must keep the arm (this 'submit in flight'
         state is the only window where count-0-but-armed exists), so the
-        boundary that follows the accepted response still consumes it."""
+        boundary that follows the accepted response still consumes it.
+
+        The api stub fires a mid-await boundary (the exact 0-count window)
+        while the POST is unresolved, then resolves accepted. Harness audit
+        note: the shared harness seeds counts.A=1, so this test explicitly
+        deletes the entry first to make the 0→1 transition real."""
         self._run_steer_consumption_script(
-            # counts.A starts at 0 (harness default): first steer of the turn.
+            # Real 0→1 transition: the harness seeds counts.A=1, but the first
+            # steer of a turn has NO pending count until the accepted response.
+            "delete counts.A;\n"
+            # api stub: consume attempt fires while the POST is in flight
+            # (count still 0), then the POST resolves accepted.
+            "globalThis.api = async () => {\n"
+            "  const midAwait = _consumeArmedSteer('A', 'stream-1');\n"
+            "  if (midAwait !== false) throw new Error('mid-await boundary must NOT consume at count 0');\n"
+            "  if (!_STEER_CONSUMPTION_ARMED.A || _STEER_CONSUMPTION_ARMED.A.armed !== true) {\n"
+            "    throw new Error('mid-await boundary must NOT delete the pre-arm');\n"
+            "  }\n"
+            "  return { accepted: true };\n"
+            "};\n"
             "assert.strictEqual(await _trySteer('first steer', true), true);\n"
-            "assert.strictEqual(counts.A, 2, 'accepted response raised the count (harness _trySteer +1)');\n"
-            "assert.strictEqual(_STEER_CONSUMPTION_ARMED.A.armed, true, 'mid-await boundary must NOT delete the pre-arm');\n"
-            "assert.strictEqual(_consumeArmedSteer('A', 'stream-1'), true, 'next boundary consumes the steer');\n"
+            "assert.strictEqual(counts.A, 1, 'accepted response raised the count 0→1');\n"
+            "assert.strictEqual(_STEER_CONSUMPTION_ARMED.A.armed, true, 'pre-arm survived the mid-await window');\n"
+            "assert.strictEqual(_consumeArmedSteer('A', 'stream-1'), true, 'the next real boundary consumes the steer');\n"
             "assert.deepStrictEqual(clearCalls, ['A']);\n"
             "assert.strictEqual(counts.A, undefined);\n"
         )
