@@ -731,10 +731,11 @@ class TestFrontendWiring:
         self._run_steer_consumption_script(
             "assert.strictEqual(await _trySteer('continue with this', true), true);\n"
             "assert.strictEqual(_STEER_CONSUMPTION_ARMED.A.streamId, 'stream-1');\n"
+            "assert.strictEqual(_STEER_CONSUMPTION_ARMED.A.boundaryEpoch, 0);\n"
             "assert.strictEqual(_consumeArmedSteer('A', 'stream-1'), true);\n"
+            "assert.strictEqual(_STEER_CONSUMPTION_ARMED.A.boundaryEpoch, 1, 'boundary must advance the epoch');\n"
             "assert.deepStrictEqual(clearCalls, ['A']);\n"
             "assert.strictEqual(counts.A, undefined);\n"
-            "assert.strictEqual(_STEER_CONSUMPTION_ARMED.A, undefined);\n"
         )
 
     def test_parallel_batch_completion_requires_all_tool_ids(self):
@@ -999,7 +1000,7 @@ class TestFrontendWiring:
             "};\n"
             "assert.strictEqual(await _trySteer('first steer', true), true);\n"
             "assert.strictEqual(counts.A, undefined, 'the boundary during the POST marked consumption; the accepted response reconciled it');\n"
-            "assert.strictEqual(_STEER_CONSUMPTION_ARMED.A, undefined, 'the reconciled arm was released');\n"
+            "assert.strictEqual(_STEER_CONSUMPTION_ARMED.A.boundaryEpoch, 1, 'the reconciled arm survives with epoch=1');\n"
             "assert.strictEqual(counts.A, undefined);\n"
         )
 
@@ -1021,12 +1022,43 @@ class TestFrontendWiring:
             "await Promise.resolve();\n"
             "assert.strictEqual(_STEER_CONSUMPTION_ARMED.A.armed, true, 'pre-arm must exist before the response');\n"
             "assert.strictEqual(_consumeArmedSteer('A', 'stream-1'), false, 'count 0 cannot consume yet');\n"
-            "assert.strictEqual(_STEER_CONSUMPTION_ARMED.A.consumed, true, 'boundary must mark the pre-acceptance consumption');\n"
+            "assert.strictEqual(_STEER_CONSUMPTION_ARMED.A.boundaryEpoch, 1, 'boundary must advance the epoch');\n"
             "accept();\n"
             "assert.strictEqual(await first, true);\n"
             "assert.strictEqual(counts.A, undefined, 'a consumed steer must not be counted by its delayed response');\n"
-            "assert.strictEqual(_STEER_CONSUMPTION_ARMED.A, undefined, 'the reconciled arm must be released');\n"
-            "assert.strictEqual(_consumeArmedSteer('A', 'stream-1'), false, 'no stale arm remains');\n"
+            "assert.strictEqual(_STEER_CONSUMPTION_ARMED.A.boundaryEpoch, 1, 'arm survives reconcile');\n"
+        )
+
+    def test_concurrent_steers_one_boundary_epoch_reconciliation(self):
+        """#7434: two steers in flight, one boundary fires, both are drained
+        by the same boundary. Both responses must skip the count increment
+        because armedAtEpoch < boundaryEpoch for both."""
+        self._run_steer_consumption_script(
+            "delete counts.A;\n"
+            "let accept1 = null;\n"
+            "let accept2 = null;\n"
+            "let callCount = 0;\n"
+            "globalThis.api = () => {\n"
+            "  callCount++;\n"
+            "  if (callCount === 1) return new Promise(resolve => { accept1 = () => resolve({ accepted: true }); });\n"
+            "  return new Promise(resolve => { accept2 = () => resolve({ accepted: true }); });\n"
+            "};\n"
+            "const first = _trySteer('steer one', true);\n"
+            "await Promise.resolve();\n"
+            "await Promise.resolve();\n"
+            "const second = _trySteer('steer two', true);\n"
+            "await Promise.resolve();\n"
+            "await Promise.resolve();\n"
+            "await Promise.resolve();\n"
+            "assert.strictEqual(_STEER_CONSUMPTION_ARMED.A.armed, true, 'arm exists before boundary');\n"
+            "assert.strictEqual(_STEER_CONSUMPTION_ARMED.A.boundaryEpoch, 0, 'epoch is 0 before boundary');\n"
+            "assert.strictEqual(_consumeArmedSteer('A', 'stream-1'), false, 'count 0, no payload to clear');\n"
+            "assert.strictEqual(_STEER_CONSUMPTION_ARMED.A.boundaryEpoch, 1, 'epoch advanced to 1');\n"
+            "accept1();\n"
+            "accept2();\n"
+            "assert.strictEqual(await first, true, 'first steer resolved');\n"
+            "assert.strictEqual(await second, true, 'second steer resolved');\n"
+            "assert.strictEqual(counts.A, undefined, 'both steers were drained by the same boundary; neither should be counted');\n"
         )
 
     def test_prearm_steer_consumption_before_accepted_response(self):

@@ -2130,6 +2130,15 @@ function _dispatchExtensionTurnLifecycle(type,sessionId,streamId,details={}){
 // once per batch and appends it to the batch's last tool-role result.  Therefore
 // that boundary is an earlier reliable UI boundary than the next `tool` event,
 // which never arrives when the model continues with prose or finishes the turn.
+//
+// #7434: the arm carries a monotonic `boundaryEpoch` counter that advances
+// every time a finalized tool batch fires.  Each steer submission captures
+// `armedAtEpoch` BEFORE sending the POST.  On the accepted response, if
+// `boundaryEpoch > armedAtEpoch`, the steer was drained by a boundary that
+// fired while the POST was in flight — skip the count increment.  This
+// correctly handles N concurrent steers and M concurrent boundaries without
+// needing per-request attribution: the backend drains the entire buffer
+// atomically, so any boundary after arming consumed this steer.
 const _STEER_CONSUMPTION_ARMED = {};
 const _STEER_TOOL_BATCHES = {};
 function _resetSteerToolBatch(sessionId, streamId, options={}){
@@ -2195,24 +2204,24 @@ function _clearSteerConsumptionForStream(sessionId, streamId){
   }
 }
 function _armSteerConsumption(sessionId, streamId){
-  // TODO(#7434): the boolean `consumed` flag cannot attribute a boundary
-  // drain to individual steer requests when multiple are in flight. Replace
-  // with a `pendingBoundary: streamId` field + response-time reconciliation
-  // once the per-request consumed model lands.
   const sid = String(sessionId || '');
   const activeStreamId = String(streamId || '');
   if(!sid || !activeStreamId) return;
   const current = _STEER_CONSUMPTION_ARMED[sid];
   if(current && current.streamId === activeStreamId && current.armed){
-    if(current.consumed){
-      delete _STEER_CONSUMPTION_ARMED[sid];
-      if(typeof clearSteerPending === 'function') clearSteerPending(sid);
-      return false;
-    }
-    return true;
+    // Re-arm on an already-armed slot: return the current epoch so the
+    // caller can capture `armedAtEpoch`.  No state change needed.
+    return current.boundaryEpoch;
   }
-  _STEER_CONSUMPTION_ARMED[sid] = { streamId: activeStreamId, armed: true, consumed: false };
-  return true;
+  _STEER_CONSUMPTION_ARMED[sid] = { streamId: activeStreamId, armed: true, boundaryEpoch: 0 };
+  return 0;
+}
+function _getSteerBoundaryEpoch(sessionId){
+  const sid = String(sessionId || '');
+  if(!sid) return 0;
+  const current = _STEER_CONSUMPTION_ARMED[sid];
+  if(!current || !current.armed) return 0;
+  return current.boundaryEpoch;
 }
 function _resetSteerConsumptionArming(sessionId, streamId, options={}){
   const sid = String(sessionId || '');
@@ -2249,18 +2258,16 @@ function _consumeArmedSteer(sessionId, streamId){
   }
   const toolBatch = _STEER_TOOL_BATCHES[sid];
   if(toolBatch && toolBatch.streamId === activeStreamId && toolBatch.ids.size > 0) return false;
+  // #7434: advance the epoch only after the batch gate.  Every accepted
+  // steer whose armedAtEpoch < boundaryEpoch was drained by this boundary.
+  current.boundaryEpoch++;
   if(typeof getSteerPendingCount !== 'function' || getSteerPendingCount(sid) <= 0){
-    // A count-0-but-armed state exists while the
-    // steer POST is in flight (arm installed pre-submit, count incremented
-    // on the accepted response). Mark the boundary so a delayed accepted
-    // response cannot count a steer that was already applied; failed/queued
-    // fallbacks still release the arm via _resetSteerConsumptionArming.
-    current.consumed = true;
+    // count==0 but armed: no accepted steers to clear right now, but the
+    // epoch advance above ensures any in-flight POST will reconcile.
     return false;
   }
   if(typeof clearSteerPending !== 'function') return false;
   clearSteerPending(sid);
-  delete _STEER_CONSUMPTION_ARMED[sid];
   return true;
 }
 
