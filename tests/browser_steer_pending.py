@@ -397,7 +397,6 @@ def main() -> int:
         browser.close()
         browser = None
         print("\nSTEER PENDING BROWSER GATE PASSED")
-        exit_code = 0
         return 0
 
     except Exception as error:
