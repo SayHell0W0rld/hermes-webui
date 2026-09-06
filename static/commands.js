@@ -1705,10 +1705,13 @@ async function _trySteer(msg, explicitSteer){
     // released the shared arm while this POST was in flight (the failure path
     // sees count 0 and clears the slot). The accepted steer IS pending
     // payload from here on, so its arm must exist before the count rises.
-    // #7434: reconcile against the boundary epoch.  If a boundary fired
-    // while this POST was in flight, the backend already drained this steer.
-    if(ownerStreamId && typeof _getSteerBoundaryEpoch==='function'){
-      const currentEpoch = _getSteerBoundaryEpoch(ownerSid);
+    // #7434: reconcile against the boundary epoch.  Use _armSteerConsumption
+    // (not the bare getter) because it is idempotent: it re-creates a missing
+    // arm slot (sibling failure may have deleted it) and returns the live
+    // boundaryEpoch.  If a boundary fired while this POST was in flight, the
+    // backend already drained this steer.
+    if(ownerStreamId && typeof _armSteerConsumption==='function'){
+      const currentEpoch = _armSteerConsumption(ownerSid, ownerStreamId) || 0;
       if(armedAtEpoch < currentEpoch){
         showToast(t('cmd_steer_delivered'),2500);
         return true;

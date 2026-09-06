@@ -1060,6 +1060,37 @@ class TestFrontendWiring:
             "assert.strictEqual(counts.A, undefined, 'both steers were drained by the same boundary; neither should be counted');\n"
         )
 
+    def test_accepted_steer_after_sibling_failure_rearms_and_counts(self):
+        """#7434: accepted steer must re-arm via _armSteerConsumption (not the
+        bare getter) when a sibling failure deleted the shared arm. The epoch
+        read must return the live epoch from the re-created arm, not 0."""
+        self._run_steer_consumption_script(
+            "delete counts.A;\n"
+            "let accept1 = null;\n"
+            "let apiCalls = [];\n"
+            "globalThis.api = (url, options) => {\n"
+            "  apiCalls.push(url);\n"
+            "  if (apiCalls.length === 1) {\n"
+            "    return new Promise(resolve => { accept1 = () => resolve({ accepted: true }); });\n"
+            "  }\n"
+            "  return Promise.resolve({ accepted: false, fallback: 'busy' });\n"
+            "};\n"
+            "const first = _trySteer('accepted steer', true);\n"
+            "await Promise.resolve();\n"
+            "await Promise.resolve();\n"
+            "const second = _trySteer('failed sibling', true);\n"
+            "assert.strictEqual(await second, false, 'sibling failed');\n"
+            "assert.strictEqual(_STEER_CONSUMPTION_ARMED.A, undefined, 'sibling failure deleted the shared arm');\n"
+            "assert.strictEqual(counts.A, undefined, 'count stays 0 (nothing accepted yet)');\n"
+            "accept1();\n"
+            "assert.strictEqual(await first, true, 'first steer accepted');\n"
+            "assert.strictEqual(_STEER_CONSUMPTION_ARMED.A.boundaryEpoch, 0, 're-arm via _armSteerConsumption re-created the arm at epoch 0');\n"
+            "assert.strictEqual(counts.A, 1, 'epoch reconcile did not skip (0<0 false); count incremented');\n"
+            "assert.strictEqual(_consumeArmedSteer('A', 'stream-1'), true, 'next boundary consumes and clears');\n"
+            "assert.deepStrictEqual(clearCalls, ['A']);\n"
+            "assert.strictEqual(counts.A, undefined);\n"
+        )
+
     def test_prearm_steer_consumption_before_accepted_response(self):
         """The backend may call agent.steer() before HTTP resolves and reach the
         next tool boundary before response processing resumes. Pre-arm on
