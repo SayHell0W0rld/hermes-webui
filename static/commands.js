@@ -1666,11 +1666,6 @@ async function _trySteer(msg, explicitSteer){
     return false;
   }
   if(ownerStreamId&&typeof _armSteerConsumption==='function') _armSteerConsumption(ownerSid,ownerStreamId);
-  // #7434: capture the boundary epoch before sending the POST.  If a tool
-  // boundary fires while this request is in flight, the epoch will advance
-  // and the accepted response will skip the count increment.
-  const armedAtEpoch = ownerStreamId && typeof _getSteerBoundaryEpoch==='function'
-    ? _getSteerBoundaryEpoch(ownerSid) : 0;
   try{
     result=await api('/api/chat/steer',{
       method:'POST',

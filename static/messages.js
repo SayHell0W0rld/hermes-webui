@@ -2132,13 +2132,10 @@ function _dispatchExtensionTurnLifecycle(type,sessionId,streamId,details={}){
 // which never arrives when the model continues with prose or finishes the turn.
 //
 // #7434: the arm carries a monotonic `boundaryEpoch` counter that advances
-// every time a finalized tool batch fires.  Each steer submission captures
-// `armedAtEpoch` BEFORE sending the POST.  On the accepted response, if
-// `boundaryEpoch > armedAtEpoch`, the steer was drained by a boundary that
-// fired while the POST was in flight — skip the count increment.  This
-// correctly handles N concurrent steers and M concurrent boundaries without
-// needing per-request attribution: the backend drains the entire buffer
-// atomically, so any boundary after arming consumed this steer.
+// every time a finalized tool batch fires.  The epoch tracks how many
+// boundaries have been observed; accepted steers are always counted
+// (over-count is preferable to under-count).  The epoch may inform future
+// reconciliation once backend consumption attribution is available.
 const _STEER_CONSUMPTION_ARMED = {};
 const _STEER_TOOL_BATCHES = {};
 function _resetSteerToolBatch(sessionId, streamId, options={}){
@@ -2209,8 +2206,7 @@ function _armSteerConsumption(sessionId, streamId){
   if(!sid || !activeStreamId) return;
   const current = _STEER_CONSUMPTION_ARMED[sid];
   if(current && current.streamId === activeStreamId && current.armed){
-    // Re-arm on an already-armed slot: return the current epoch so the
-    // caller can capture `armedAtEpoch`.  No state change needed.
+    // Re-arm on an already-armed slot: no state change needed.
     return current.boundaryEpoch;
   }
   _STEER_CONSUMPTION_ARMED[sid] = { streamId: activeStreamId, armed: true, boundaryEpoch: 0 };
@@ -2258,8 +2254,8 @@ function _consumeArmedSteer(sessionId, streamId){
   }
   const toolBatch = _STEER_TOOL_BATCHES[sid];
   if(toolBatch && toolBatch.streamId === activeStreamId && toolBatch.ids.size > 0) return false;
-  // #7434: advance the epoch only after the batch gate.  Every accepted
-  // steer whose armedAtEpoch < boundaryEpoch was drained by this boundary.
+  // #7434: advance the epoch only after the batch gate, so a mid-batch
+  // tool_complete cannot falsely advance it before the batch finalizes.
   current.boundaryEpoch++;
   if(typeof getSteerPendingCount !== 'function' || getSteerPendingCount(sid) <= 0){
     // count==0 but armed: no accepted steers to clear right now, but the
