@@ -283,7 +283,6 @@ def main() -> int:
     proc = None
     log = None
     log_path = None
-    exit_code = 1
     playwright = None
     browser = None
     page = None
@@ -381,8 +380,8 @@ def main() -> int:
             raise AssertionError("mock Gateway did not emit the final-answer prefix")
         gateway.release_terminal.set()
         page.wait_for_function(
-            f"text => typeof S !== 'undefined' && S.busy === false && !S.activeStreamId && "
-            f"((document.querySelector('#msgInner') || {{}}).innerText || '').includes(text)",
+            "text => typeof S !== 'undefined' && S.busy === false && !S.activeStreamId && "
+            "((document.querySelector('#msgInner') || {}).innerText || '').includes(text)",
             arg=FINAL_TEXT,
             timeout=15000,
         )
@@ -415,7 +414,6 @@ def main() -> int:
         except Exception as artifact_error:
             print(f"Could not capture browser artifacts: {artifact_error}", file=sys.stderr)
         print(f"Artifacts: {artifact_dir}", file=sys.stderr)
-        exit_code = 1
         return 1
     finally:
         gateway.close()

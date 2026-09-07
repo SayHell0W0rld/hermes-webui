@@ -901,7 +901,6 @@ class TestFrontendWiring:
         import json
         import shutil
         import subprocess
-        import textwrap
 
         node = shutil.which("node")
         if not node:  # pragma: no cover
