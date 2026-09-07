@@ -522,8 +522,8 @@ class TestI18nKeys:
             )
 
     def test_key_count_total(self):
-        """17 keys × 6 locales = 102 minimum occurrences across the file."""
+        """16 keys × 6 locales = 96 minimum occurrences across the file."""
         total = sum(I18N_JS.count(f"{key}:") for key in self.REQUIRED_KEYS)
         assert total >= 16 * 6, (
-            f"Total i18n occurrences = {total}; expected ≥ {17*6}"
+            f"Total i18n occurrences = {total}; expected ≥ {16*6}"
         )

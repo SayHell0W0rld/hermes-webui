@@ -197,6 +197,12 @@ pending-steer count:
   replacement stream or authoritative idle reload, and on turn completion.
   If the tool boundary races the accepted HTTP response, the response path
   reconciles the already-consumed boundary instead of counting a stale steer.
+  Known limitation: when a sibling steer fails while the shared arm has a
+  nonzero boundary epoch, the epoch is lost and the accepted sibling may
+  over-count by ≤ (failed siblings). This self-heals at turn completion
+  (the `done` handler zeroes the count unconditionally), so the stale
+  indicator can never outlive the current turn. A definitive fix requires
+  backend consumption attribution in the steer response.
 - Transcript rendering (`renderMessages`) may refresh the indicator but never
   mutates the count; a render while steer still waits at a tool-result boundary
   must continue showing the pending value.
