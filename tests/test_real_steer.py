@@ -1217,8 +1217,9 @@ class TestFrontendWiring:
         complete_end = self.msgs.find("\n    source.addEventListener('todo_state'", complete_start)
         assert complete_end > complete_start
         complete_listener = self.msgs[complete_start:complete_end]
-        assert "if(typeof _trackSteerToolComplete === 'function') _trackSteerToolComplete(activeSid, streamId, d.tid||d.id)" in complete_listener
-        assert "if(typeof _consumeArmedSteer === 'function') _consumeArmedSteer(activeSid, streamId)" in complete_listener
+        assert "_trackSteerToolComplete(activeSid, streamId, d.tid||d.id)" in complete_listener
+        assert "_steerBatchFinalized" in complete_listener
+        assert "_consumeArmedSteer(activeSid, streamId)" in complete_listener
         assert "_trackSteerToolStart(activeSid, streamId, d.tid||d.id)" in self.msgs[listener_start:complete_start]
         assert "_consumeArmedSteer(activeSid, streamId)" not in self.msgs[listener_start:complete_start]
 

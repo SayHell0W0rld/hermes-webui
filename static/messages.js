@@ -2212,13 +2212,6 @@ function _armSteerConsumption(sessionId, streamId){
   _STEER_CONSUMPTION_ARMED[sid] = { streamId: activeStreamId, armed: true, boundaryEpoch: 0 };
   return 0;
 }
-function _getSteerBoundaryEpoch(sessionId){
-  const sid = String(sessionId || '');
-  if(!sid) return 0;
-  const current = _STEER_CONSUMPTION_ARMED[sid];
-  if(!current || !current.armed) return 0;
-  return current.boundaryEpoch;
-}
 function _resetSteerConsumptionArming(sessionId, streamId, options={}){
   const sid = String(sessionId || '');
   const activeStreamId = String(streamId || '');
@@ -6033,8 +6026,13 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
       if(!S.session||S.session.session_id!==activeSid||S.activeStreamId!==streamId) return;
       const d=JSON.parse(e.data);
       if(d.name==='clarify') return;
-      if(typeof _trackSteerToolComplete === 'function') _trackSteerToolComplete(activeSid, streamId, d.tid||d.id);
-      if(typeof _consumeArmedSteer === 'function') _consumeArmedSteer(activeSid, streamId);
+      // #7434: only a proven finalized batch boundary consumes the armed
+      // steer. Untracked or missing-ID completions return false and must
+      // NOT clear the pending count (conservative: retain until done).
+      const _steerBatchFinalized = typeof _trackSteerToolComplete === 'function'
+        && _trackSteerToolComplete(activeSid, streamId, d.tid||d.id);
+      if(_steerBatchFinalized && typeof _consumeArmedSteer === 'function')
+        _consumeArmedSteer(activeSid, streamId);
       _completeAutomaticCompressionOnLiveProgress(activeSid);
       const tc=upsertLiveToolCall(d,'complete');
       if(!tc) return;
