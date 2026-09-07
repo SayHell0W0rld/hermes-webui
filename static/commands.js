@@ -1701,21 +1701,15 @@ async function _trySteer(msg, explicitSteer){
       }
       _showSteerIndicator(_steerIndicatorText(originalMsg,pendingFilesSnapshot));
     }
-    // Re-arm idempotently on acceptance: a sibling steer's failure could have
-    // released the shared arm while this POST was in flight (the failure path
-    // sees count 0 and clears the slot). The accepted steer IS pending
-    // payload from here on, so its arm must exist before the count rises.
-    // #7434: reconcile against the boundary epoch.  Use _armSteerConsumption
-    // (not the bare getter) because it is idempotent: it re-creates a missing
-    // arm slot (sibling failure may have deleted it) and returns the live
-    // boundaryEpoch.  If a boundary fired while this POST was in flight, the
-    // backend already drained this steer.
+    // #7434: ensure the arm exists on acceptance (a sibling failure may have
+    // deleted it). We do NOT skip the count based on epoch advancement: the
+    // epoch tells us a boundary was observed after arming, but it cannot
+    // prove this particular steer was in the Agent buffer when that boundary
+    // drained. An over-count (transient +1 that clears at turn end) is
+    // preferable to hiding pending input (under-count), per maintainer
+    // review on #7441.
     if(ownerStreamId && typeof _armSteerConsumption==='function'){
-      const currentEpoch = _armSteerConsumption(ownerSid, ownerStreamId) || 0;
-      if(armedAtEpoch < currentEpoch){
-        showToast(t('cmd_steer_delivered'),2500);
-        return true;
-      }
+      _armSteerConsumption(ownerSid, ownerStreamId);
     }
     _setSteerPendingCount(ownerSid,getSteerPendingCount(ownerSid)+1);
     if(_steerOwnerIsCurrent(ownerSid)) _updateSteerPendingIndicatorStatus(getSteerPendingCount(ownerSid));

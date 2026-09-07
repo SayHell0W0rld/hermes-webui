@@ -195,14 +195,16 @@ pending-steer count:
   at the finalized tool-batch boundary, on `pending_steer_leftover`
   (unconsumed text is queued as a session message for the next turn), on a
   replacement stream or authoritative idle reload, and on turn completion.
-  If the tool boundary races the accepted HTTP response, the response path
-  reconciles the already-consumed boundary instead of counting a stale steer.
-  Known limitation: when a sibling steer fails while the shared arm has a
-  nonzero boundary epoch, the epoch is lost and the accepted sibling may
-  over-count by ≤ (failed siblings). This self-heals at turn completion
-  (the `done` handler zeroes the count unconditionally), so the stale
-  indicator can never outlive the current turn. A definitive fix requires
-  backend consumption attribution in the steer response.
+  The accepted response always increments the count: the boundary epoch
+  proves only that a boundary was observed after arming, not that this
+  particular steer was in the Agent buffer when that boundary drained.
+  An over-count (transient +1 that clears at turn end) is preferable to
+  hiding pending input (under-count), because the composer must never
+  claim "no pending steers" when the Agent still holds one. The count
+  may be off by ≤ (steers affected by boundary-before-buffer-append),
+  and self-heals at turn completion when the `done` handler zeroes it
+  unconditionally. A definitive fix requires backend consumption
+  attribution in the steer response.
 - Transcript rendering (`renderMessages`) may refresh the indicator but never
   mutates the count; a render while steer still waits at a tool-result boundary
   must continue showing the pending value.

@@ -998,17 +998,15 @@ class TestFrontendWiring:
             "  return { accepted: true };\n"
             "};\n"
             "assert.strictEqual(await _trySteer('first steer', true), true);\n"
-            "assert.strictEqual(counts.A, undefined, 'the boundary during the POST marked consumption; the accepted response reconciled it');\n"
+            "assert.strictEqual(counts.A, 1, 'accepted steers are always counted; over-count self-heals at turn end');\n"
             "assert.strictEqual(_STEER_CONSUMPTION_ARMED.A.boundaryEpoch, 1, 'the reconciled arm survives with epoch=1');\n"
-            "assert.strictEqual(counts.A, undefined);\n"
         )
 
     def test_boundary_during_post_reconciles_delayed_accepted_response(self):
-        # A boundary arriving while the POST is unresolved marks consumption.
-        # The browser-visible SSE boundary and the HTTP accepted response are
-        # independent queues. If the backend consumes the steer before the
-        # accepted response resolves, the response must not add a stale pending
-        # count after the boundary.
+        # #7434: accepted steers are always counted (never suppressed by the
+        # epoch). The boundary may have drained the steer before the accepted
+        # response resolves, producing a bounded over-count that self-heals
+        # at turn end. Hiding a still-pending steer (under-count) is worse.
         self._run_steer_consumption_script(
             "delete counts.A;\n"
             "let accept = null;\n"
@@ -1024,14 +1022,14 @@ class TestFrontendWiring:
             "assert.strictEqual(_STEER_CONSUMPTION_ARMED.A.boundaryEpoch, 1, 'boundary must advance the epoch');\n"
             "accept();\n"
             "assert.strictEqual(await first, true);\n"
-            "assert.strictEqual(counts.A, undefined, 'a consumed steer must not be counted by its delayed response');\n"
-            "assert.strictEqual(_STEER_CONSUMPTION_ARMED.A.boundaryEpoch, 1, 'arm survives reconcile');\n"
+            "assert.strictEqual(counts.A, 1, 'accepted steers are always counted; over-count self-heals at turn end');\n"
+            "assert.strictEqual(_STEER_CONSUMPTION_ARMED.A.boundaryEpoch, 1, 'arm survives with advanced epoch');\n"
         )
 
     def test_concurrent_steers_one_boundary_epoch_reconciliation(self):
-        """#7434: two steers in flight, one boundary fires, both are drained
-        by the same boundary. Both responses must skip the count increment
-        because armedAtEpoch < boundaryEpoch for both."""
+        """#7434: two steers in flight, one boundary fires during both POSTs.
+        Both accepted responses always increment (over-count policy), so the
+        count reaches 2. The next boundary or done clears it."""
         self._run_steer_consumption_script(
             "delete counts.A;\n"
             "let accept1 = null;\n"
@@ -1057,7 +1055,7 @@ class TestFrontendWiring:
             "accept2();\n"
             "assert.strictEqual(await first, true, 'first steer resolved');\n"
             "assert.strictEqual(await second, true, 'second steer resolved');\n"
-            "assert.strictEqual(counts.A, undefined, 'both steers were drained by the same boundary; neither should be counted');\n"
+            "assert.strictEqual(counts.A, 2, 'accepted steers are always counted; over-count self-heals at next boundary or turn end');\n"
         )
 
     def test_accepted_steer_after_sibling_failure_rearms_and_counts(self):
